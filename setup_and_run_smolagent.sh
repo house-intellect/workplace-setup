@@ -60,12 +60,21 @@ fi
 
 # 3. Check/Install agentic-browser skill dependencies
 echo "[3/5] Checking agentic-browser skill..."
-mkdir -p "$SKILL_DIR/scripts"
+mkdir -p "$SKILL_DIR"
+if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
+    cp -r "$SCRIPT_DIR/agentic-browser/"* "$SKILL_DIR/"
+fi
 
 if [ ! -d "$SKILL_DIR/node_modules" ]; then
     echo "Installing puppeteer for agentic-browser skill..."
     (cd "$SKILL_DIR" && npm init -y >/dev/null 2>&1 || true)
     (cd "$SKILL_DIR" && npm install puppeteer --no-audit --no-fund)
+fi
+
+# Ensure agent.sh exists in $HOME
+if [ -f "$SCRIPT_DIR/agent.sh" ]; then
+    cp "$SCRIPT_DIR/agent.sh" "$HOME/agent.sh"
+    chmod +x "$HOME/agent.sh"
 fi
 
 # 4. Virtual Environment Detection & Reuse Algorithm for Smolagent
@@ -123,5 +132,9 @@ echo ""
 echo "=== Setup Complete! Launching Agent... ==="
 echo ""
 
-# Delegate to agent.sh passing prompt/file/image arguments
-exec /home/grapeonwheels/agent.sh "$@"
+AGENT_BIN="$HOME/agent.sh"
+if [ ! -f "$AGENT_BIN" ]; then
+    AGENT_BIN="$SCRIPT_DIR/agent.sh"
+fi
+
+exec "$AGENT_BIN" "$@"

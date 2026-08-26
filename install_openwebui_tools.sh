@@ -6,7 +6,21 @@ TARGET_DIR="${1:-$SCRIPT_DIR/open-webui}"
 
 echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 
-# 1. Download Open WebUI if not present
+# 1. Deploy agentic-browser skill to home directory
+echo "[1/4] Deploying agentic-browser skill..."
+mkdir -p "$HOME/.agents/skills/agentic-browser"
+if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
+    cp -r "$SCRIPT_DIR/agentic-browser/"* "$HOME/.agents/skills/agentic-browser/"
+fi
+
+if [ -f "$HOME/.agents/skills/agentic-browser/package.json" ]; then
+    if [ ! -d "$HOME/.agents/skills/agentic-browser/node_modules" ]; then
+        echo "Installing puppeteer dependencies for agentic-browser skill..."
+        (cd "$HOME/.agents/skills/agentic-browser" && npm install --no-audit --no-fund)
+    fi
+fi
+
+# 2. Download Open WebUI if not present
 if [ ! -d "$TARGET_DIR" ]; then
     echo "Open WebUI not found in $TARGET_DIR. Cloning official repository..."
     git clone https://github.com/open-webui/open-webui.git "$TARGET_DIR"
