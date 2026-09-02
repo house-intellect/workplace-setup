@@ -3,52 +3,17 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STACK_DIR="$HOME/local-ai-stack"
-PROXY_DIR="$STACK_DIR/gemini-openai-proxy"
+FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 SMOL_DIR="$STACK_DIR/tool-calling-test"
-PROXY_PORT=8085
-PATCH_PATH="$HOME/.gemini-proxy-patch.js"
+FASTAPI_PORT=8000
 REAL_HOME="$HOME"
 SKILL_DIR="$HOME/.agents/skills/agentic-browser"
 
-echo "=== Smolagent & Skills One-Click Setup (Gemini 2.5 Flash) ==="
-
-# 0. Gemini API Key Configuration
-echo ""
-echo "=========================================================="
-echo " Google AI Studio API Key Required"
-echo " Get your free key here: https://aistudio.google.com/apikey"
-echo "=========================================================="
-echo ""
-
-PROMPT_MSG="Enter your Gemini API Key"
-if [ -n "$GEMINI_API_KEY" ]; then
-    PROMPT_MSG="Enter your Gemini API Key (press Enter to keep existing key): "
-else
-    PROMPT_MSG="Enter your Gemini API Key: "
-fi
-
-read -rp "$PROMPT_MSG" USER_KEY
-if [ -n "$USER_KEY" ]; then
-    export GEMINI_API_KEY="$USER_KEY"
-elif [ -z "$GEMINI_API_KEY" ]; then
-    echo "Error: No API key provided. Exiting."
-    exit 1
-fi
-
-# Always offer to update or confirm key if needed and persist to RC files
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc" ]; then
-        if grep -q "GEMINI_API_KEY" "$rc"; then
-            sed -i "s|export GEMINI_API_KEY=.*|export GEMINI_API_KEY=\"$GEMINI_API_KEY\"|g" "$rc"
-        else
-            echo "export GEMINI_API_KEY=\"$GEMINI_API_KEY\"" >> "$rc"
-        fi
-    fi
-done
+echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash) ==="
 
 # 1. System Dependency Checks
-echo "[1/5] Checking system dependencies..."
-for cmd in node npm python3 git nc curl; do
+echo "[1/4] Checking system dependencies..."
+for cmd in python3 git nc curl; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Error: Required command '$cmd' is not installed or not in PATH."
         exit 1
@@ -57,26 +22,8 @@ done
 
 mkdir -p "$STACK_DIR" "$SMOL_DIR"
 
-# Configure user-level npm global directory (no sudo required)
-NPM_GLOBAL_DIR="$HOME/.npm-global"
-mkdir -p "$NPM_GLOBAL_DIR"
-npm config set prefix "$NPM_GLOBAL_DIR"
-export PATH="$NPM_GLOBAL_DIR/bin:$PATH"
-
-for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
-    if [ -f "$rc" ] && ! grep -q "NPM_GLOBAL_DIR" "$rc"; then
-        echo "export PATH=\"$HOME/.npm-global/bin:\$PATH\"" >> "$rc"
-    fi
-done
-
-# Install @google/gemini-cli in user space if not installed
-if ! command -v gemini &>/dev/null; then
-    echo "Installing @google/gemini-cli (user level, no sudo required)..."
-    npm install -g @google/gemini-cli --no-audit --no-fund || true
-fi
-
 # 2. Python Virtual Environment Setup
-echo "[2/5] Configuring Python environment..."
+echo "[2/4] Configuring Python environment..."
 VENV_DIR="$SMOL_DIR/.venv"
 if [ ! -f "$VENV_DIR/bin/python" ] || [ ! -f "$VENV_DIR/bin/pip" ]; then
     rm -rf "$VENV_DIR"
@@ -87,123 +34,176 @@ fi
 PYTHON_EXEC="$VENV_DIR/bin/python"
 PIP_EXEC="$VENV_DIR/bin/pip"
 
-CHECK_DEPS="import smolagents, openai, PIL, pydantic, requests; from smolagents import OpenAIServerModel"
+CHECK_DEPS="import smolagents, openai, PIL, pydantic, requests, gemini_webapi, rookiepy, fastapi, uvicorn, lmdb, pydantic_settings; from smolagents import OpenAIServerModel"
 if ! "$PYTHON_EXEC" -c "$CHECK_DEPS" 2>/dev/null; then
-    echo "Installing smolagents and OpenAI integration packages..."
+    echo "Installing smolagents, gemini-webapi, rookiepy, and server dependencies..."
     "$PIP_EXEC" install --upgrade pip
-    "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests
-    "$PIP_EXEC" install secretstorage dbus-python 2>/dev/null || true
+    "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi==2.0.0" uvicorn fastapi lmdb pydantic-settings pyyaml
 fi
 
-# 3. Check/Install Proxy
-echo "[3/5] Setting up gemini-openai-proxy..."
-if [ -d "$PROXY_DIR" ] && [ ! -f "$PROXY_DIR/package.json" ]; then
-    rm -rf "$PROXY_DIR"
-fi
-if [ ! -d "$PROXY_DIR" ]; then
-    echo "Cloning gemini-openai-proxy..."
-    git clone https://github.com/Brioch/gemini-openai-proxy.git "$PROXY_DIR" || \
-    git clone https://github.com/zhu327/gemini-openai-proxy.git "$PROXY_DIR"
+# 3. Check/Install Gemini-FastAPI Server
+echo "[3/4] Setting up Gemini-FastAPI server..."
+if [ ! -d "$FASTAPI_DIR" ]; then
+    echo "Cloning Gemini-FastAPI..."
+    git clone https://github.com/Nativu5/Gemini-FastAPI.git "$FASTAPI_DIR"
 fi
 
-if [ ! -d "$PROXY_DIR/node_modules" ]; then
-    echo "Installing Node dependencies for proxy..."
-    (cd "$PROXY_DIR" && npm install --no-audit --no-fund)
-fi
+# Ensure Firefox cookie extraction fallback and gemini-3.7-flash alias are patched in Gemini-FastAPI
+if [ -f "$FASTAPI_DIR/app/services/pool.py" ]; then
+    if ! grep -q "rookiepy" "$FASTAPI_DIR/app/services/pool.py"; then
+        "$PYTHON_EXEC" -c '
+from pathlib import Path
+p = Path("'"$FASTAPI_DIR"'/app/services/pool.py")
+txt = p.read_text()
+if "GeminiClientSettings" not in txt:
+    txt = txt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
+old_init = """        if len(g_config.gemini.clients) == 0:
+            raise ValueError("No Gemini clients configured")
 
-# Patch gemini-openai-proxy source files and installed node_modules to use gemini-3.5-flash
-if [ -d "$PROXY_DIR" ]; then
-    echo "Patching gemini-openai-proxy default models to gemini-3.5-flash..."
-    sed -i 's/gemini-2.5-flash/gemini-3.5-flash/g; s/gemini-2.5-pro/gemini-3.5-flash/g' "$PROXY_DIR/src/chatwrapper.ts" "$PROXY_DIR/src/server.ts" 2>/dev/null || true
-    if [ -f "$PROXY_DIR/node_modules/@google/gemini-cli-core/dist/src/config/models.js" ]; then
-        sed -i 's/gemini-2.5-flash/gemini-3.5-flash/g; s/gemini-2.5-pro/gemini-3.5-flash/g' "$PROXY_DIR/node_modules/@google/gemini-cli-core/dist/src/config/models.js" 2>/dev/null || true
+        for c in g_config.gemini.clients:"""
+new_init = """        clients_to_load = list(g_config.gemini.clients)
+        if len(clients_to_load) == 0 or (
+            len(clients_to_load) == 1
+            and (
+                not clients_to_load[0].secure_1psid
+                or "YOUR_SECURE" in str(clients_to_load[0].secure_1psid)
+            )
+        ):
+            extracted_psid = None
+            extracted_psidts = None
+            try:
+                import rookiepy
+                for b_name in ["firefox", "chrome", "chromium", "brave", "edge", "opera"]:
+                    fn = getattr(rookiepy, b_name, None)
+                    if not fn:
+                        continue
+                    try:
+                        cookies = fn([".google.com"])
+                        cdict = {c["name"]: c["value"] for c in cookies if "1PSID" in c["name"]}
+                        if "__Secure-1PSID" in cdict and "__Secure-1PSIDTS" in cdict:
+                            extracted_psid = cdict["__Secure-1PSID"]
+                            extracted_psidts = cdict["__Secure-1PSIDTS"]
+                            logger.info(f"Auto-extracted Gemini session cookies from {b_name}.")
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.warning(f"Could not import rookiepy or extract cookies: {e}")
+
+            if extracted_psid and extracted_psidts:
+                clients_to_load = [
+                    GeminiClientSettings(
+                        id="auto-browser",
+                        secure_1psid=extracted_psid,
+                        secure_1psidts=extracted_psidts,
+                        proxy=None,
+                    )
+                ]
+
+        if len(clients_to_load) == 0:
+            raise ValueError("No Gemini clients configured and auto-extraction failed.")
+
+        for c in clients_to_load:
+            curl_opts = {}
+            try:
+                from curl_cffi import CurlOpt
+                curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+            except Exception:
+                pass
+
+            client = GeminiClientWrapper(
+                client_id=c.id,
+                secure_1psid=c.secure_1psid,
+                secure_1psidts=c.secure_1psidts,
+                proxy=c.proxy,
+                curl_options=curl_opts,
+            )
+            self._clients.append(client)
+            self._id_map[c.id] = client
+            self._round_robin.append(client)
+            self._restart_locks[c.id] = asyncio.Lock()
+        return"""
+if old_init in txt:
+    txt = txt.replace(old_init, new_init)
+    p.write_text(txt)
+' 2>/dev/null || true
     fi
 fi
 
-# 4. Generate Proxy Patch
-echo "[4/5] Generating proxy patch & skill setup..."
-cat << 'PATCH_EOF' > "$PATCH_PATH"
-const WORKER_HOST = 'square-shadow-6cc0.sirglepp.workers.dev';
+if [ -f "$FASTAPI_DIR/app/server/chat.py" ]; then
+    if ! grep -q "gemini-3.7-flash" "$FASTAPI_DIR/app/server/chat.py"; then
+        "$PYTHON_EXEC" -c '
+from pathlib import Path
+p = Path("'"$FASTAPI_DIR"'/app/server/chat.py")
+txt = p.read_text()
+old_fn = """def _get_model_by_name(name: str) -> Model:
+    \"\"\"Retrieve a Model instance by name.\"\"\"
+    strategy = g_config.gemini.model_strategy
+    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
-const PATCHED_DOMAINS = [
-  'googleapis.com',
-  'google.com',
-  'antigravity-unleash.goog'
-];
+    if name in custom_models:
+        return Model.from_dict(custom_models[name].model_dump())
 
-function isTargetHost(host) {
-  if (!host || host === WORKER_HOST || host.startsWith('data:')) return false;
-  return PATCHED_DOMAINS.some(d => host.endsWith(d) || host.includes(d));
+    if strategy == "overwrite":
+        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
+
+    return Model.from_name(name)"""
+
+new_fn = """MODEL_ALIASES = {
+    "gemini-3.7-flash": "gemini-3-flash",
+    "gemini-3.7-pro": "gemini-3-pro",
+    "gemini-2.5-flash": "gemini-3-flash",
+    "gemini-2.5-pro": "gemini-3-pro",
+    "gemini-1.5-flash": "gemini-3-flash",
+    "gemini-1.5-pro": "gemini-3-pro",
+    "gemini-flash": "gemini-3-flash",
+    "gemini-pro": "gemini-3-pro",
+    "gpt-4o": "gemini-3-flash",
+    "gpt-4": "gemini-3-pro",
+    "gpt-3.5-turbo": "gemini-3-flash",
 }
 
-// 1. Patch Global Fetch
-if (globalThis.fetch) {
-  const _fetch = globalThis.fetch;
-  globalThis.fetch = function (resource, init) {
-    let urlString = typeof resource === 'string' ? resource : (resource.url || String(resource));
-    if (urlString.startsWith('data:')) {
-      return _fetch(resource, init);
-    }
-    let hostname = '';
-    try {
-      hostname = new URL(urlString).hostname;
-    } catch (e) {}
+def _get_model_by_name(name: str) -> Model:
+    \"\"\"Retrieve a Model instance by name.\"\"\"
+    strategy = g_config.gemini.model_strategy
+    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
-    if (isTargetHost(hostname) || isTargetHost(urlString)) {
-      const origHost = hostname || new URL(urlString).hostname;
-      urlString = urlString.replace(/https:\/\/[^\/]+/, `https://${WORKER_HOST}`);
-      
-      const newInit = init || {};
-      const headers = new Headers(newInit.headers || (resource instanceof Request ? resource.headers : {}));
-      headers.set('x-target-host', origHost);
-      newInit.headers = headers;
+    if name in custom_models:
+        return Model.from_dict(custom_models[name].model_dump())
 
-      if (typeof resource === 'string') {
-        resource = urlString;
-        init = newInit;
-      } else {
-        resource = new Request(urlString, { ...resource, headers });
-      }
-    }
-    return _fetch(resource, init);
-  };
-}
+    resolved_name = MODEL_ALIASES.get(name, name)
+    if resolved_name in custom_models:
+        return Model.from_dict(custom_models[resolved_name].model_dump())
 
-// 2. Patch Node http / https modules with SNI servername fix
-const https = require('node:https');
-const http = require('node:http');
+    if strategy == "overwrite":
+        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
 
-function patchRequestModule(mod) {
-  const origRequest = mod.request;
-  mod.request = function (...args) {
-    let opts = args[0];
-    if (typeof opts === 'string') {
-      try { opts = new URL(opts); } catch (e) {}
-    }
+    try:
+        return Model.from_name(resolved_name)
+    except Exception:
+        return Model.BASIC_FLASH"""
 
-    if (opts && (opts.host === '127.0.0.1' || opts.hostname === '127.0.0.1' || opts.host === 'localhost' || opts.hostname === 'localhost')) {
-      delete opts.agent;
-      return origRequest.apply(this, args);
-    }
-
-    const hostToCheck = opts?.hostname || opts?.host;
-
-    if (opts && isTargetHost(hostToCheck)) {
-      const origHost = hostToCheck;
-      opts.hostname = WORKER_HOST;
-      opts.host = WORKER_HOST;
-      opts.servername = WORKER_HOST;
-      opts.headers = opts.headers || {};
-      opts.headers['x-target-host'] = origHost;
-      opts.headers['host'] = WORKER_HOST;
-    }
-    return origRequest.apply(this, args);
-  };
-}
-
-patchRequestModule(https);
-patchRequestModule(http);
-PATCH_EOF
+if old_fn in txt:
+    txt = txt.replace(old_fn, new_fn)
+    p.write_text(txt)
+' 2>/dev/null || true
+    fi
+fi
+# Ensure StrEnum compatibility for Python 3.10 in installed dependencies
+"$PYTHON_EXEC" -c '
+import glob
+from pathlib import Path
+for sp in glob.glob("'"$SMOL_DIR"'/.venv/lib/python*/site-packages"):
+    for f in glob.glob(f"{sp}/gemini_webapi/**/*.py", recursive=True):
+        p = Path(f)
+        txt = p.read_text()
+        if "from enum import Enum, IntEnum, StrEnum" in txt:
+            txt = txt.replace(
+                "from enum import Enum, IntEnum, StrEnum",
+                "from enum import Enum, IntEnum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    class StrEnum(str, Enum):\n        pass"
+            )
+            p.write_text(txt)
+' 2>/dev/null || true
 
 # Check/Install agentic-browser skill dependencies
 mkdir -p "$SKILL_DIR"
@@ -211,12 +211,14 @@ if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
     cp -r "$SCRIPT_DIR/agentic-browser/"* "$SKILL_DIR/"
 fi
 if [ ! -d "$SKILL_DIR/node_modules" ]; then
-    (cd "$SKILL_DIR" && npm init -y >/dev/null 2>&1 || true)
-    (cd "$SKILL_DIR" && npm install puppeteer --no-audit --no-fund)
+    if command -v npm &>/dev/null; then
+        (cd "$SKILL_DIR" && npm init -y >/dev/null 2>&1 || true)
+        (cd "$SKILL_DIR" && npm install puppeteer --no-audit --no-fund 2>/dev/null || true)
+    fi
 fi
 
-# 5. Generate Runner and Launcher
-echo "[5/5] Generating agent runner and ~/agent.sh..."
+# 4. Generate Runner and Launcher
+echo "[4/4] Generating agent runner and ~/agent.sh..."
 
 cat << 'PY_EOF' > "$SMOL_DIR/smolagent.py"
 import sys
@@ -225,69 +227,43 @@ import glob
 import json
 import argparse
 import subprocess
-from smolagents import CodeAgent, OpenAIServerModel
+from smolagents import ToolCallingAgent, OpenAIServerModel, tool
+
+@tool
+def execute_bash(command: str) -> str:
+    """
+    Executes a shell command in a full Bash environment on the local machine and returns the stdout and stderr output.
+    Supports complex shell features including pipelines (|), redirects (>, >>), chained commands (&&, ||, ;), process substitution, environment variables, and multiline scripts.
+
+    Args:
+        command: The bash command string or multiline script to execute in /bin/bash.
+    """
+    import subprocess
+    try:
+        res = subprocess.run(
+            command,
+            shell=True,
+            executable="/bin/bash",
+            capture_output=True,
+            text=True,
+            timeout=120
+        )
+        out = res.stdout.strip()
+        err = res.stderr.strip()
+        if out and err:
+            return f"STDOUT:\n{out}\n\nSTDERR:\n{err}"
+        if not out and not err:
+            return f"Command executed successfully with return code {res.returncode} and no output."
+        return out or err
+    except subprocess.TimeoutExpired:
+        return "Command timed out after 120 seconds."
+    except Exception as e:
+        return f"Execution error: {str(e)}"
 
 def get_auth_token():
     if os.environ.get("GEMINI_API_KEY"):
         return os.environ["GEMINI_API_KEY"]
-    
-    try:
-        import secretstorage
-        bus = secretstorage.dbus_init()
-        collection = secretstorage.get_default_collection(bus)
-        for item in collection.get_all_items():
-            label = item.get_label().lower()
-            if "gemini" in label or "google" in label:
-                secret_str = item.get_secret().decode("utf-8", errors="ignore")
-                if "accessToken" in secret_str or "apiKey" in secret_str or secret_str.startswith("AIzaSy"):
-                    try:
-                        data = json.loads(secret_str)
-                        if isinstance(data, dict):
-                            tok = data.get("token", {}).get("accessToken") or data.get("apiKey") or data.get("token")
-                            if tok:
-                                return tok
-                    except Exception:
-                        if secret_str.startswith("AIzaSy"):
-                            return secret_str
-    except Exception:
-        pass
-
-    possible_paths = set(
-        glob.glob(os.path.expanduser("~/.gemini/*.json")) + 
-        glob.glob(os.path.expanduser("~/.config/gemini/*.json")) +
-        [os.path.expanduser("~/.config/gcloud/application_default_credentials.json")]
-    )
-
-    for path in possible_paths:
-        if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    if isinstance(data, dict):
-                        for key in ["access_token", "token", "accessToken", "key", "apiKey"]:
-                            if data.get(key):
-                                return data[key]
-                    elif isinstance(data, list):
-                        for entry in data:
-                            if isinstance(entry, dict):
-                                for key in ["access_token", "token", "accessToken", "key", "apiKey"]:
-                                    if entry.get(key):
-                                        return entry[key]
-            except Exception:
-                continue
-
-    try:
-        token = subprocess.check_output(
-            ["gcloud", "auth", "print-access-token"],
-            stderr=subprocess.DEVNULL,
-            text=True
-        ).strip()
-        if token:
-            return token
-    except Exception:
-        pass
-
-    return "oauth-token"
+    return "not-needed"
 
 def main():
     parser = argparse.ArgumentParser(description="Smolagent Runner")
@@ -305,14 +281,20 @@ def main():
         print("Error: No prompt provided.")
         sys.exit(1)
 
+    for k in ["all_proxy", "ALL_PROXY", "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"]:
+        os.environ.pop(k, None)
+
     auth_token = get_auth_token()
 
     model = OpenAIServerModel(
-        model_id="gemini-3.5-flash",
-        api_base="http://127.0.0.1:8085/v1",
-        api_key=auth_token
+        model_id="gemini-3.7-flash",
+        api_base="http://127.0.0.1:8000/v1",
+        api_key=auth_token or "not-needed"
     )
-    agent = CodeAgent(tools=[], model=model)
+    agent = ToolCallingAgent(
+        tools=[execute_bash],
+        model=model
+    )
     response = agent.run(full_prompt)
     print(response)
 
@@ -328,24 +310,24 @@ if [ "$#" -eq 0 ]; then
     exit 1
 fi
 STACK_DIR="$HOME/local-ai-stack"
-PROXY_DIR="$STACK_DIR/gemini-openai-proxy"
+FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 SMOL_DIR="$STACK_DIR/tool-calling-test"
-PROXY_PORT=8085
-PATCH_PATH="$HOME/.gemini-proxy-patch.js"
+FASTAPI_PORT=8000
 PYTHON_EXEC="$SMOL_DIR/.venv/bin/python"
-export MODEL="gemini-3.5-flash"
+export MODEL="gemini-3.7-flash"
+unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 if [ -f "$HOME/.bashrc" ]; then
     source "$HOME/.bashrc" 2>/dev/null || true
 fi
 
-if ! nc -z localhost $PROXY_PORT 2>/dev/null; then
-    echo "Starting gemini-openai-proxy with API key auth..."
-    (cd "$PROXY_DIR" && nohup env PORT=$PROXY_PORT MODEL="gemini-3.5-flash" AUTH_TYPE="gemini-api-key" GEMINI_API_KEY="$GEMINI_API_KEY" NODE_OPTIONS="-r $HOME/.gemini-proxy-patch.js" npm start > "$STACK_DIR/proxy_access.log" 2>&1 &)
+if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
+    echo "Starting Gemini-FastAPI server on port $FASTAPI_PORT..."
+    (cd "$FASTAPI_DIR" && nohup "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &)
     
     PROXY_READY=0
-    for i in {1..10}; do
-        if nc -z localhost $PROXY_PORT 2>/dev/null; then
+    for i in {1..20}; do
+        if nc -z localhost $FASTAPI_PORT 2>/dev/null; then
             PROXY_READY=1
             break
         fi
@@ -353,39 +335,20 @@ if ! nc -z localhost $PROXY_PORT 2>/dev/null; then
     done
 
     if [ $PROXY_READY -eq 0 ]; then
-        echo "Error: gemini-openai-proxy failed to start on port $PROXY_PORT."
+        echo "Error: Gemini-FastAPI server failed to start on port $FASTAPI_PORT."
         tail -n 20 "$STACK_DIR/proxy_access.log"
         exit 1
     fi
 fi
 
-exec "$PYTHON_EXEC" "$SMOL_DIR/smolagent.py" "$@"
+exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SMOL_DIR/smolagent.py" "$@"
 AGENT_EOF
 
-cat << GEMINI_EOF > "$HOME/gemini.sh"
-#!/bin/bash
-PATCH_PATH="$HOME/.gemini-proxy-patch.js"
-export PATH="$HOME/.npm-global/bin:$PATH"
-export GEMINI_API_KEY="$GEMINI_API_KEY"
-export GEMINI_DEFAULT_AUTH_TYPE="gemini-api-key"
-
-if [ -f "$HOME/.bashrc" ]; then
-    source "$HOME/.bashrc" 2>/dev/null || true
-fi
-
-if command -v gemini &>/dev/null; then
-    exec env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy GEMINI_API_KEY="$GEMINI_API_KEY" GEMINI_DEFAULT_AUTH_TYPE="gemini-api-key" NODE_OPTIONS="--require $HOME/.gemini-proxy-patch.js" gemini -m gemini-3.5-flash --yolo "$@"
-else
-    exec env -u HTTP_PROXY -u HTTPS_PROXY -u http_proxy -u https_proxy GEMINI_API_KEY="$GEMINI_API_KEY" GEMINI_DEFAULT_AUTH_TYPE="gemini-api-key" NODE_OPTIONS="--require $HOME/.gemini-proxy-patch.js" npx --yes @google/gemini-cli -m gemini-3.5-flash --yolo "$@"
-fi
-GEMINI_EOF
-
-chmod +x "$HOME/agent.sh" "$HOME/gemini.sh"
+chmod +x "$HOME/agent.sh"
 
 echo ""
 echo "=== Setup Complete! ==="
 echo "You can now run agent queries using:  ~/agent.sh \"Your prompt here\""
-echo "You can launch Gemini CLI using:    ~/gemini.sh"
 echo ""
 
 if [ $# -gt 0 ]; then

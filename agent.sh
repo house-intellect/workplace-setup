@@ -1,31 +1,21 @@
-#!/bin/bash
-PROXY_PORT=8085
-PROXY_DIR="$HOME/local-ai-stack/gemini-openai-proxy"
-SCRIPT_PATH="/home/grapeonwheels/local-ai-stack/tool-calling-test/smolagent.py"
-PATCH_PATH="$HOME/.gemini-proxy-patch.js"
+#!/bin/sh
+FASTAPI_PORT=8000
+FASTAPI_DIR="$HOME/local-ai-stack/gemini-fastapi"
+SCRIPT_PATH="$HOME/local-ai-stack/tool-calling-test/smolagent.py"
 
-# 1. Capture prompt, text files, and image arguments
+# 1. Capture prompt, text files, and image arguments (POSIX compatible)
 PROMPT_TEXT=""
-FILES=()
-IMAGES=()
+FILE_ARG=""
+IMAGE_ARG=""
 
-while [[ $# -gt 0 ]]; do
+while [ $# -gt 0 ]; do
     case "$1" in
         -f|--file)
-            FILES+=("$2")
+            FILE_ARG="$2"
             shift 2
             ;;
         -i|--image)
-            TARGET="$2"
-            if [ -d "$TARGET" ]; then
-                for img in "$TARGET"/*.{png,jpg,jpeg,webp,gif,PNG,JPG,JPEG,WEBP,GIF}; do
-                    [ -e "$img" ] && IMAGES+=("$img")
-                done
-            elif [ -f "$TARGET" ]; then
-                IMAGES+=("$TARGET")
-            else
-                echo "Warning: Image file/dir '$TARGET' not found."
-            fi
+            IMAGE_ARG="$2"
             shift 2
             ;;
         *)
@@ -43,7 +33,7 @@ if [ -z "$PROMPT_TEXT" ] && [ ! -t 0 ]; then
     PROMPT_TEXT=$(cat)
 fi
 
-if [ -z "$PROMPT_TEXT" ] && [ ${#FILES[@]} -eq 0 ] && [ ${#IMAGES[@]} -eq 0 ]; then
+if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
     echo "Error: No prompt, text file, or image provided."
     echo "Usage: $0 [-f file] [-i image_or_folder] \"Your prompt here\""
     exit 1
@@ -51,33 +41,40 @@ fi
 
 TASK_PROMPT="$PROMPT_TEXT"
 
-for file in "${FILES[@]}"; do
-    if [ -f "$file" ]; then
-        TASK_PROMPT+=$'\n\n'
-        TASK_PROMPT+="--- File: $file ---"$'\n'
-        TASK_PROMPT+="$(cat "$file")"
-    else
-        echo "Warning: File '$file' not found."
-    fi
-done
+if [ -n "$FILE_ARG" ]; then
+    if [ -f "$FILE_ARG" ]; then
+        FILE_CONTENT=$(cat "$FILE_ARG")
+        TASK_PROMPT="$TASK_PROMPT
 
-# 2. Start proxy if needed
-if ! nc -z localhost $PROXY_PORT 2>/dev/null; then
-    echo "Starting gemini-openai-proxy with patch..."
-    cd "$PROXY_DIR" && nohup env PORT=$PROXY_PORT NODE_OPTIONS="-r $PATCH_PATH" npm start > proxy_access.log 2>&1 &
+--- File: $FILE_ARG ---
+$FILE_CONTENT"
+    else
+        echo "Warning: File '$FILE_ARG' not found."
+    fi
+fi
+
+# 2. Start Gemini-FastAPI if needed
+PYTHON_EXEC="$HOME/local-ai-stack/tool-calling-test/.venv/bin/python"
+
+unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+
+if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
+    echo "Starting Gemini-FastAPI server on port $FASTAPI_PORT..."
+    (cd "$FASTAPI_DIR" && nohup "$PYTHON_EXEC" run.py > "$HOME/local-ai-stack/proxy_access.log" 2>&1 &)
     
-    for i in {1..10}; do
-        if nc -z localhost $PROXY_PORT 2>/dev/null; then
+    i=1
+    while [ $i -le 20 ]; do
+        if nc -z localhost $FASTAPI_PORT 2>/dev/null; then
             break
         fi
         sleep 1
+        i=$((i + 1))
     done
 fi
 
-# 3. Run Python agent passing prompt and image arguments
-ARGS=("$TASK_PROMPT")
-if [ ${#IMAGES[@]} -gt 0 ]; then
-    ARGS+=("--images" "${IMAGES[@]}")
+# 3. Run Python agent
+if [ -n "$IMAGE_ARG" ]; then
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG" "$TASK_PROMPT"
+else
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "$TASK_PROMPT"
 fi
-
-~/local-ai-stack/tool-calling-test/.venv/bin/python "$SCRIPT_PATH" "${ARGS[@]}"

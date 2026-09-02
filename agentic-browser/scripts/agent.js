@@ -9,19 +9,30 @@ async function ensureBrowserRunning() {
     // Not running
   }
 
-  let browserCmd = 'yandex-browser';
+  let browserCmd = '';
+  let browserArgs = '';
   try {
-    execSync('which yandex-browser', { stdio: 'ignore' });
+    execSync('which firefox', { stdio: 'ignore' });
+    browserCmd = 'firefox';
+    browserArgs = '--remote-debugging-port 9222 --remote-allow-hosts localhost,127.0.0.1 --remote-allow-origins http://localhost:9222,http://127.0.0.1:9222';
   } catch (e) {
     try {
-      execSync('which yandex-browser-stable', { stdio: 'ignore' });
-      browserCmd = 'yandex-browser-stable';
-    } catch (err) {
+      execSync('which google-chrome', { stdio: 'ignore' });
       browserCmd = 'google-chrome';
+      browserArgs = '--remote-debugging-port=9222';
+    } catch (err) {
+      try {
+        execSync('which chromium-browser || which chromium', { stdio: 'ignore' });
+        browserCmd = 'chromium';
+        browserArgs = '--remote-debugging-port=9222';
+      } catch (e2) {
+        browserCmd = 'yandex-browser';
+        browserArgs = '--remote-debugging-port=9222';
+      }
     }
   }
 
-  execSync(`nohup ${browserCmd} --remote-debugging-port=9222 > /dev/null 2>&1 &`);
+  execSync(`nohup ${browserCmd} ${browserArgs} > /dev/null 2>&1 &`);
 
   for (let i = 0; i < 20; i++) {
     try {
