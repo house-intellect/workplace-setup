@@ -13,12 +13,16 @@ echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash)
 
 # 1. System Dependency Checks
 echo "[1/4] Checking system dependencies..."
-for cmd in python3 git nc curl; do
+for cmd in python3 nc curl; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Error: Required command '$cmd' is not installed or not in PATH."
         exit 1
     fi
 done
+
+if ! command -v git &>/dev/null; then
+    echo "Notice: 'git' is not found in PATH; using local offline repository folders if present."
+fi
 
 mkdir -p "$STACK_DIR" "$SMOL_DIR"
 
@@ -37,15 +41,37 @@ PIP_EXEC="$VENV_DIR/bin/pip"
 CHECK_DEPS="import smolagents, openai, PIL, pydantic, requests, gemini_webapi, rookiepy, fastapi, uvicorn, lmdb, pydantic_settings; from smolagents import OpenAIServerModel"
 if ! "$PYTHON_EXEC" -c "$CHECK_DEPS" 2>/dev/null; then
     echo "Installing smolagents, gemini-webapi, rookiepy, and server dependencies..."
-    "$PIP_EXEC" install --upgrade pip
+    "$PIP_EXEC" install --upgrade pip 2>/dev/null || true
     "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi==2.0.0" uvicorn fastapi lmdb pydantic-settings pyyaml
 fi
 
 # 3. Check/Install Gemini-FastAPI Server
 echo "[3/4] Setting up Gemini-FastAPI server..."
-if [ ! -d "$FASTAPI_DIR" ]; then
-    echo "Cloning Gemini-FastAPI..."
-    git clone https://github.com/Nativu5/Gemini-FastAPI.git "$FASTAPI_DIR"
+if [ ! -f "$FASTAPI_DIR/run.py" ]; then
+    if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ]; then
+        echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Deploying..."
+        mkdir -p "$FASTAPI_DIR"
+        cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
+    elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ]; then
+        echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Deploying..."
+        mkdir -p "$FASTAPI_DIR"
+        cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
+    elif [ -f "$SCRIPT_DIR/run.py" ] && [ -d "$SCRIPT_DIR/app" ]; then
+        echo "Running directly inside Gemini-FastAPI folder. Deploying to $FASTAPI_DIR..."
+        mkdir -p "$FASTAPI_DIR"
+        cp -r "$SCRIPT_DIR/"* "$FASTAPI_DIR/"
+    elif command -v git &>/dev/null; then
+        echo "Cloning Gemini-FastAPI from GitHub..."
+        git clone https://github.com/Nativu5/Gemini-FastAPI.git "$FASTAPI_DIR" || {
+            echo "Error: Failed to clone Gemini-FastAPI and no pre-downloaded folder found."
+            exit 1
+        }
+    else
+        echo "Error: Gemini-FastAPI not found at $FASTAPI_DIR, no pre-downloaded folder in $SCRIPT_DIR, and git is not installed."
+        exit 1
+    fi
+else
+    echo "Gemini-FastAPI is already present at $FASTAPI_DIR."
 fi
 
 # Ensure Firefox cookie extraction fallback and gemini-3.7-flash alias are patched in Gemini-FastAPI

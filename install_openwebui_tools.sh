@@ -15,15 +15,44 @@ fi
 
 if [ -f "$HOME/.agents/skills/agentic-browser/package.json" ]; then
     if [ ! -d "$HOME/.agents/skills/agentic-browser/node_modules" ]; then
-        echo "Installing puppeteer dependencies for agentic-browser skill..."
-        (cd "$HOME/.agents/skills/agentic-browser" && npm install --no-audit --no-fund)
+        if command -v npm &>/dev/null; then
+            echo "Installing puppeteer dependencies for agentic-browser skill..."
+            (cd "$HOME/.agents/skills/agentic-browser" && npm install --no-audit --no-fund 2>/dev/null || true)
+        fi
     fi
 fi
 
-# 2. Download Open WebUI if not present
-if [ ! -d "$TARGET_DIR" ]; then
-    echo "Open WebUI not found in $TARGET_DIR. Cloning official repository..."
-    git clone https://github.com/open-webui/open-webui.git "$TARGET_DIR"
+# 2. Check/Deploy Open WebUI repository
+echo "[2/4] Detecting Open WebUI codebase..."
+if [ ! -d "$TARGET_DIR" ] || [ ! -f "$TARGET_DIR/package.json" -a ! -d "$TARGET_DIR/backend" ]; then
+    if [ -d "$SCRIPT_DIR/open-webui" ] && [ -f "$SCRIPT_DIR/open-webui/package.json" ]; then
+        if [ "$TARGET_DIR" != "$SCRIPT_DIR/open-webui" ]; then
+            echo "Found pre-downloaded open-webui in $SCRIPT_DIR/open-webui. Deploying to $TARGET_DIR..."
+            mkdir -p "$TARGET_DIR"
+            cp -r "$SCRIPT_DIR/open-webui/"* "$TARGET_DIR/"
+        fi
+    elif [ -d "$SCRIPT_DIR/open-webui-fork" ] && [ -f "$SCRIPT_DIR/open-webui-fork/package.json" ]; then
+        echo "Found pre-downloaded open-webui-fork in $SCRIPT_DIR/open-webui-fork. Deploying to $TARGET_DIR..."
+        mkdir -p "$TARGET_DIR"
+        cp -r "$SCRIPT_DIR/open-webui-fork/"* "$TARGET_DIR/"
+    elif [ -d "$SCRIPT_DIR/backend" ] && [ -f "$SCRIPT_DIR/package.json" ]; then
+        echo "Running directly inside Open WebUI codebase ($SCRIPT_DIR)."
+        TARGET_DIR="$SCRIPT_DIR"
+    elif [ -d "$HOME/local-ai-stack/open-webui" ] && [ -f "$HOME/local-ai-stack/open-webui/package.json" ]; then
+        echo "Using existing Open WebUI repository at $HOME/local-ai-stack/open-webui..."
+        TARGET_DIR="$HOME/local-ai-stack/open-webui"
+    elif command -v git &>/dev/null; then
+        echo "Open WebUI not found locally. Cloning official repository..."
+        git clone https://github.com/open-webui/open-webui.git "$TARGET_DIR" || {
+            echo "Error: Failed to clone open-webui from GitHub and no local pre-downloaded folder found."
+            exit 1
+        }
+    else
+        echo "Error: Open WebUI repository not found at $TARGET_DIR, no pre-downloaded folder in $SCRIPT_DIR, and git is not installed."
+        exit 1
+    fi
+else
+    echo "Open WebUI repository found at $TARGET_DIR."
 fi
 
 # 2. Virtual Environment Detection & Open WebUI Package Installation
@@ -70,11 +99,19 @@ fi
 
 # 3. Ensure Gemini-FastAPI Bridge & Custom DNS (dns.comss.one) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
-SMOL_DIR="$(dirname "$TARGET_DIR")/tool-calling-test"
+if [ ! -d "$FASTAPI_DIR" ]; then
+    if [ -d "$HOME/local-ai-stack/gemini-fastapi" ]; then
+        FASTAPI_DIR="$HOME/local-ai-stack/gemini-fastapi"
+    elif [ -d "$SCRIPT_DIR/gemini-fastapi" ]; then
+        FASTAPI_DIR="$SCRIPT_DIR/gemini-fastapi"
+    elif [ -d "$SCRIPT_DIR/Gemini-FastAPI" ]; then
+        FASTAPI_DIR="$SCRIPT_DIR/Gemini-FastAPI"
+    fi
+fi
 
 if [ -d "$FASTAPI_DIR" ] && [ -f "$FASTAPI_DIR/app/services/pool.py" ]; then
     if ! grep -q "dns.comss.one" "$FASTAPI_DIR/app/services/pool.py"; then
-        echo "Configuring custom DNS (dns.comss.one) in Gemini-FastAPI..."
+        echo "Configuring custom DNS (dns.comss.one) in Gemini-FastAPI at $FASTAPI_DIR..."
         sed -i 's/client = GeminiClientWrapper(/curl_opts = {CurlOpt.DOH_URL: b"https:\/\/dns.comss.one\/dns-query"} if "CurlOpt" in dir() else {}\n            client = GeminiClientWrapper(\n                curl_options=curl_opts,/g' "$FASTAPI_DIR/app/services/pool.py" 2>/dev/null || true
     fi
 fi
