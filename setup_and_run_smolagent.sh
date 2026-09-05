@@ -279,7 +279,7 @@ def _get_model_by_name(name: str) -> Model:
 
 
 def _get_available_models() -> list[ModelData]:
-    \"\"\"Return a list of available models based on configuration strategy.\"\"\"
+    \"\"\"Return a clean list of available models based on configuration strategy.\"\"\"
     now = int(datetime.now(tz=UTC).timestamp())
     strategy = g_config.gemini.model_strategy
     models_data = []
@@ -299,9 +299,6 @@ def _get_available_models() -> list[ModelData]:
         "gemini-3.5-flash-lite",
         "gemini-3.1-pro",
         "gemini-extended-thinking",
-        "gemini-3-flash",
-        "gemini-3-flash-thinking",
-        "gemini-3-pro",
         "flash",
         "thinking",
         "pro",
@@ -314,23 +311,6 @@ def _get_available_models() -> list[ModelData]:
                 owned_by="gemini-web",
             )
         )
-
-    if strategy == "append":
-        custom_ids = {m.model_name for m in custom_models} | set(priority_aliases)
-        for model in Model:
-            m_name = model.model_name
-            if not m_name or m_name == "unspecified":
-                continue
-            if m_name in custom_ids:
-                continue
-
-            models_data.append(
-                ModelData(
-                    id=m_name,
-                    created=now,
-                    owned_by="gemini-web",
-                )
-            )
 
     return models_data"""
 
