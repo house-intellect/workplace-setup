@@ -13,7 +13,7 @@ echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash)
 
 # 1. System Dependency Checks
 echo "[1/4] Checking system dependencies..."
-for cmd in python3 nc curl; do
+for cmd in nc curl; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Error: Required command '$cmd' is not installed or not in PATH."
         exit 1
@@ -26,13 +26,65 @@ fi
 
 mkdir -p "$STACK_DIR" "$SMOL_DIR"
 
+# 1.5 Python Version Check & Local Install (handles systems without root / old Python)
+echo "[1.5/4] Checking Python version (need >= 3.10)..."
+BASE_PYTHON=""
+
+check_python_version() {
+    local py_bin="$1"
+    if [ -x "$py_bin" ]; then
+        local ver=$("$py_bin" -c 'import sys; print(str(sys.version_info[0]) + "." + str(sys.version_info[1]))' 2>/dev/null || echo "0.0")
+        local major=$(echo "$ver" | cut -d. -f1)
+        local minor=$(echo "$ver" | cut -d. -f2)
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+            return 0 # Success
+        fi
+    fi
+    return 1 # Fail
+}
+
+if command -v python3 >/dev/null 2>&1 && check_python_version "$(command -v python3)"; then
+    BASE_PYTHON="$(command -v python3)"
+    echo "Found system Python >= 3.10: $BASE_PYTHON"
+elif [ -x "$HOME/miniconda3/bin/python3" ] && check_python_version "$HOME/miniconda3/bin/python3"; then
+    BASE_PYTHON="$HOME/miniconda3/bin/python3"
+    echo "Found local Miniconda Python >= 3.10: $BASE_PYTHON"
+else
+    echo "Python 3.10+ not found in system. Installing local Miniconda (compatible with older GLIBC, no root required)..."
+    rm -rf "$HOME/miniconda3"
+    rm -f miniconda.sh
+    if [ -f "$SCRIPT_DIR/miniconda.sh" ]; then
+        cp "$SCRIPT_DIR/miniconda.sh" miniconda.sh
+    else
+        curl -sL "https://repo.anaconda.com/miniconda/Miniconda3-py310_23.5.2-0-Linux-x86_64.sh" -o miniconda.sh
+    fi
+    bash miniconda.sh -b -p "$HOME/miniconda3"
+    rm -f miniconda.sh
+    
+    BASE_PYTHON="$HOME/miniconda3/bin/python3"
+    if ! check_python_version "$BASE_PYTHON"; then
+        echo "Error: Failed to install local Python 3.10."
+        exit 1
+    fi
+    echo "Successfully installed local Miniconda Python 3.10."
+fi
+
 # 2. Python Virtual Environment Setup
 echo "[2/4] Configuring Python environment..."
 VENV_DIR="$SMOL_DIR/.venv"
+
+# Ensure existing venv uses the correct python version
+if [ -f "$VENV_DIR/bin/python" ]; then
+    if ! check_python_version "$VENV_DIR/bin/python"; then
+        echo "Existing virtual environment uses an old Python version. Recreating..."
+        rm -rf "$VENV_DIR"
+    fi
+fi
+
 if [ ! -f "$VENV_DIR/bin/python" ] || [ ! -f "$VENV_DIR/bin/pip" ]; then
     rm -rf "$VENV_DIR"
-    echo "Creating virtual environment at $VENV_DIR..."
-    python3 -m venv "$VENV_DIR"
+    echo "Creating virtual environment at $VENV_DIR using $BASE_PYTHON..."
+    "$BASE_PYTHON" -m venv "$VENV_DIR"
 fi
 
 PYTHON_EXEC="$VENV_DIR/bin/python"
@@ -215,11 +267,13 @@ if old_fn in txt:
 ' 2>/dev/null || true
     fi
 fi
-# Ensure StrEnum compatibility for Python 3.10 in installed dependencies
+# Ensure StrEnum compatibility & DNS / SNI Proxy (dns.comss.one) support in gemini_webapi
 "$PYTHON_EXEC" -c '
 import glob
 from pathlib import Path
+
 for sp in glob.glob("'"$SMOL_DIR"'/.venv/lib/python*/site-packages"):
+    # 1. StrEnum compatibility for Python 3.10
     for f in glob.glob(f"{sp}/gemini_webapi/**/*.py", recursive=True):
         p = Path(f)
         txt = p.read_text()
@@ -229,6 +283,48 @@ for sp in glob.glob("'"$SMOL_DIR"'/.venv/lib/python*/site-packages"):
                 "from enum import Enum, IntEnum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    class StrEnum(str, Enum):\n        pass"
             )
             p.write_text(txt)
+
+    # 2. Patch get_access_token.py to forward and default curl_options with DoH
+    gat_file = Path(f"{sp}/gemini_webapi/utils/get_access_token.py")
+    if gat_file.exists():
+        txt = gat_file.read_text()
+        if "curl_options: dict | None = None" not in txt:
+            txt = txt.replace(
+                "verify: bool = True,",
+                "verify: bool = True,\n    curl_options: dict | None = None,"
+            )
+            txt = txt.replace(
+                "client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n    )",
+                "try:\n        from curl_cffi import CurlOpt\n        if curl_options is None:\n            curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n    except Exception:\n        pass\n    client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=curl_options\n    )"
+            )
+            gat_file.write_text(txt)
+
+    # 3. Patch client.py to store and pass curl_options
+    client_file = Path(f"{sp}/gemini_webapi/client.py")
+    if client_file.exists():
+        txt = client_file.read_text()
+        if "self.curl_options" not in txt:
+            txt = txt.replace(
+                "self.kwargs = kwargs",
+                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass"
+            )
+            txt = txt.replace(
+                "verify=self.kwargs.get(\"verify\", True),",
+                "verify=self.kwargs.get(\"verify\", True),\n                    curl_options=self.curl_options,"
+            )
+            client_file.write_text(txt)
+
+    # 4. Patch image.py and video.py for file uploads
+    for fname in ["image.py", "video.py"]:
+        type_file = Path(f"{sp}/gemini_webapi/types/{fname}")
+        if type_file.exists():
+            txt = type_file.read_text()
+            if "req_curl_opts" not in txt:
+                txt = txt.replace(
+                    "req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n        )",
+                    "req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
+                )
+                type_file.write_text(txt)
 ' 2>/dev/null || true
 
 # Check/Install agentic-browser skill dependencies

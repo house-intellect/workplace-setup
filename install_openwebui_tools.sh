@@ -71,33 +71,61 @@ if [ -z "$VENV_DIR" ] && [ -d "$HOME/.venv" ]; then
     VENV_DIR="$HOME/.venv"
 fi
 
-# Find best Python version for Open WebUI (Requires >=3.11)
+# Find / install Python runtime (Requires >= 3.10)
+check_python_version() {
+    local py_bin="$1"
+    if [ -x "$py_bin" ]; then
+        local ver=$("$py_bin" -c 'import sys; print(str(sys.version_info[0]) + "." + str(sys.version_info[1]))' 2>/dev/null || echo "0.0")
+        local major=$(echo "$ver" | cut -d. -f1)
+        local minor=$(echo "$ver" | cut -d. -f2)
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 PY_CMD=""
 for p in python3.12 python3.11 python3; do
-    if command -v "$p" &>/dev/null; then
-        VER=$("$p" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
-        MAJOR=$(echo "$VER" | cut -d. -f1)
-        MINOR=$(echo "$VER" | cut -d. -f2)
-        if [ "$MAJOR" -eq 3 ] && [ "$MINOR" -ge 11 ] && [ "$MINOR" -le 12 ]; then
-            PY_CMD="$p"
-            break
-        fi
+    if command -v "$p" &>/dev/null && check_python_version "$(command -v "$p")"; then
+        PY_CMD="$(command -v "$p")"
+        break
     fi
 done
 
 if [ -z "$PY_CMD" ]; then
-    PY_CMD="python3"
+    if [ -x "$HOME/miniconda3/bin/python3" ] && check_python_version "$HOME/miniconda3/bin/python3"; then
+        PY_CMD="$HOME/miniconda3/bin/python3"
+    else
+        echo "Python 3.10+ not found on system. Installing local Miniconda (compatible with older GLIBC, no root required)..."
+        rm -rf "$HOME/miniconda3"
+        rm -f miniconda.sh
+        if [ -f "$SCRIPT_DIR/miniconda.sh" ]; then
+            cp "$SCRIPT_DIR/miniconda.sh" miniconda.sh
+        else
+            curl -sL "https://repo.anaconda.com/miniconda/Miniconda3-py310_23.5.2-0-Linux-x86_64.sh" -o miniconda.sh
+        fi
+        bash miniconda.sh -b -p "$HOME/miniconda3"
+        rm -f miniconda.sh
+        PY_CMD="$HOME/miniconda3/bin/python3"
+    fi
 fi
 
 if [ -n "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/python" ]; then
-    echo "Found existing Python virtual environment at: $VENV_DIR"
+    if ! check_python_version "$VENV_DIR/bin/python"; then
+        echo "Existing virtual environment at $VENV_DIR uses an older Python. Recreating with $PY_CMD..."
+        rm -rf "$VENV_DIR"
+        "$PY_CMD" -m venv "$VENV_DIR"
+    else
+        echo "Found existing Python virtual environment at: $VENV_DIR"
+    fi
 else
     VENV_DIR="$TARGET_DIR/.venv"
     echo "Creating new Python virtual environment at: $VENV_DIR using $PY_CMD..."
     "$PY_CMD" -m venv "$VENV_DIR"
 fi
 
-# 3. Ensure Gemini-FastAPI Bridge & Custom DNS (dns.comss.one) are Present
+# 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.comss.one) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
 if [ ! -d "$FASTAPI_DIR" ]; then
     if [ -d "$HOME/local-ai-stack/gemini-fastapi" ]; then
@@ -109,12 +137,147 @@ if [ ! -d "$FASTAPI_DIR" ]; then
     fi
 fi
 
-if [ -d "$FASTAPI_DIR" ] && [ -f "$FASTAPI_DIR/app/services/pool.py" ]; then
-    if ! grep -q "dns.comss.one" "$FASTAPI_DIR/app/services/pool.py"; then
-        echo "Configuring custom DNS (dns.comss.one) in Gemini-FastAPI at $FASTAPI_DIR..."
-        sed -i 's/client = GeminiClientWrapper(/curl_opts = {CurlOpt.DOH_URL: b"https:\/\/dns.comss.one\/dns-query"} if "CurlOpt" in dir() else {}\n            client = GeminiClientWrapper(\n                curl_options=curl_opts,/g' "$FASTAPI_DIR/app/services/pool.py" 2>/dev/null || true
-    fi
-fi
+# Apply DoH / SNI Proxy and StrEnum patches to all detected Python environments and Gemini-FastAPI
+"$VENV_DIR/bin/python" -c '
+import glob
+from pathlib import Path
+
+# 1. Patch Gemini-FastAPI pool.py if present
+fastapi_dir = Path("'"$FASTAPI_DIR"'")
+pool_file = fastapi_dir / "app" / "services" / "pool.py"
+if pool_file.exists():
+    txt = pool_file.read_text()
+    if "dns.comss.one" not in txt:
+        if "GeminiClientSettings" not in txt:
+            txt = txt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
+        old_init = """        if len(g_config.gemini.clients) == 0:\n            raise ValueError("No Gemini clients configured")\n\n        for c in g_config.gemini.clients:"""
+        new_init = """        clients_to_load = list(g_config.gemini.clients)
+        if len(clients_to_load) == 0 or (
+            len(clients_to_load) == 1
+            and (
+                not clients_to_load[0].secure_1psid
+                or "YOUR_SECURE" in str(clients_to_load[0].secure_1psid)
+            )
+        ):
+            extracted_psid = None
+            extracted_psidts = None
+            try:
+                import rookiepy
+                for b_name in ["firefox", "chrome", "chromium", "brave", "edge", "opera"]:
+                    fn = getattr(rookiepy, b_name, None)
+                    if not fn:
+                        continue
+                    try:
+                        cookies = fn([".google.com"])
+                        cdict = {c["name"]: c["value"] for c in cookies if "1PSID" in c["name"]}
+                        if "__Secure-1PSID" in cdict and "__Secure-1PSIDTS" in cdict:
+                            extracted_psid = cdict["__Secure-1PSID"]
+                            extracted_psidts = cdict["__Secure-1PSIDTS"]
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+
+            if extracted_psid and extracted_psidts:
+                clients_to_load = [
+                    GeminiClientSettings(
+                        id="auto-browser",
+                        secure_1psid=extracted_psid,
+                        secure_1psidts=extracted_psidts,
+                        proxy=None,
+                    )
+                ]
+
+        if len(clients_to_load) == 0:
+            raise ValueError("No Gemini clients configured and auto-extraction failed.")
+
+        for c in clients_to_load:
+            curl_opts = {}
+            try:
+                from curl_cffi import CurlOpt
+                curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+            except Exception:
+                pass
+
+            client = GeminiClientWrapper(
+                client_id=c.id,
+                secure_1psid=c.secure_1psid,
+                secure_1psidts=c.secure_1psidts,
+                proxy=c.proxy,
+                curl_options=curl_opts,
+            )
+            self._clients.append(client)
+            self._id_map[c.id] = client
+            self._round_robin.append(client)
+            self._restart_locks[c.id] = asyncio.Lock()
+        return"""
+        if old_init in txt:
+            txt = txt.replace(old_init, new_init)
+        pool_file.write_text(txt)
+
+# 2. Patch gemini_webapi in all site-packages across stack and target venv
+search_roots = [
+    "'"$VENV_DIR"'",
+    "'"$TARGET_DIR"'/.venv",
+    "'"$HOME"'/local-ai-stack/tool-calling-test/.venv",
+    "'"$HOME"'/local-ai-stack/open-webui/.venv"
+]
+for root in search_roots:
+    for sp in glob.glob(f"{root}/lib/python*/site-packages"):
+        # StrEnum compatibility
+        for f in glob.glob(f"{sp}/gemini_webapi/**/*.py", recursive=True):
+            p = Path(f)
+            txt = p.read_text()
+            if "from enum import Enum, IntEnum, StrEnum" in txt:
+                txt = txt.replace(
+                    "from enum import Enum, IntEnum, StrEnum",
+                    "from enum import Enum, IntEnum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    class StrEnum(str, Enum):\n        pass"
+                )
+                p.write_text(txt)
+
+        # Patch get_access_token.py
+        gat_file = Path(f"{sp}/gemini_webapi/utils/get_access_token.py")
+        if gat_file.exists():
+            txt = gat_file.read_text()
+            if "curl_options: dict | None = None" not in txt:
+                txt = txt.replace(
+                    "verify: bool = True,",
+                    "verify: bool = True,\n    curl_options: dict | None = None,"
+                )
+                txt = txt.replace(
+                    "client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n    )",
+                    "try:\n        from curl_cffi import CurlOpt\n        if curl_options is None:\n            curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n    except Exception:\n        pass\n    client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=curl_options\n    )"
+                )
+                gat_file.write_text(txt)
+
+        # Patch client.py
+        client_file = Path(f"{sp}/gemini_webapi/client.py")
+        if client_file.exists():
+            txt = client_file.read_text()
+            if "self.curl_options" not in txt:
+                txt = txt.replace(
+                    "self.kwargs = kwargs",
+                    "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass"
+                )
+                txt = txt.replace(
+                    "verify=self.kwargs.get(\"verify\", True),",
+                    "verify=self.kwargs.get(\"verify\", True),\n                    curl_options=self.curl_options,"
+                )
+                client_file.write_text(txt)
+
+        # Patch image.py and video.py
+        for fname in ["image.py", "video.py"]:
+            type_file = Path(f"{sp}/gemini_webapi/types/{fname}")
+            if type_file.exists():
+                txt = type_file.read_text()
+                if "req_curl_opts" not in txt:
+                    txt = txt.replace(
+                        "req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n        )",
+                        "req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
+                    )
+                    type_file.write_text(txt)
+' 2>/dev/null || true
 
 # 4. Detect All Open WebUI webui.db Databases
 FOUND_DBS=()
@@ -240,6 +403,7 @@ description: Autonomous semantic browser navigation tool using Puppeteer on port
 """
 
 import subprocess
+import os
 
 class Tools:
     def __init__(self):
@@ -247,7 +411,8 @@ class Tools:
 
     async def agentic_browser(self, action: str, target: str = "", value: str = "") -> str:
         try:
-            cmd = ["node", "/home/grapeonwheels/.agents/skills/agentic-browser/scripts/agent.js", action]
+            script_path = os.path.expanduser("~/.agents/skills/agentic-browser/scripts/agent.js")
+            cmd = ["node", script_path, action]
             if target:
                 cmd.append(target)
             if value:
