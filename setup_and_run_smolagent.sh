@@ -394,7 +394,7 @@ def get_auth_token():
 
 def main():
     parser = argparse.ArgumentParser(description="Smolagent Runner")
-    parser.add_argument("-m", "--model", help="Model name (e.g. gemini-3.7-flash, gemini-3.7-flash-thinking, gemini-3.1-pro)", default=os.environ.get("MODEL", "gemini-3.7-flash"))
+    parser.add_argument("-m", "--model", help="Model name (e.g. gemini-3-flash, gemini-3-flash-thinking, gemini-3-pro)", default=os.environ.get("MODEL", "gemini-3-flash"))
     parser.add_argument("-f", "--file", help="Input text file path", default=None)
     parser.add_argument("-i", "--image", help="Input image path or folder", default=None)
     parser.add_argument("prompt", nargs="*", help="Prompt string")
@@ -413,7 +413,7 @@ def main():
         os.environ.pop(k, None)
 
     auth_token = get_auth_token()
-    chosen_model = args.model or os.environ.get("MODEL", "gemini-3.7-flash")
+    chosen_model = args.model or os.environ.get("MODEL", "gemini-3-flash")
 
     model = OpenAIServerModel(
         model_id=chosen_model,
@@ -432,7 +432,7 @@ if __name__ == "__main__":
 PY_EOF
 
 cat << 'AGENT_EOF' > "$HOME/agent.sh"
-#!/bin/bash
+#!/bin/sh
 FASTAPI_PORT=8000
 STACK_DIR="$HOME/local-ai-stack"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
@@ -478,7 +478,8 @@ fi
 if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
     echo "Error: No prompt, text file, or image provided."
     echo "Usage: $0 [-m model] [-f file] [-i image_or_folder] \"Your prompt here\""
-    echo "Available models: gemini-3.7-flash (default), gemini-3.7-flash-thinking, gemini-3.1-pro, gemini-3.5-flash-lite"
+    echo "Canonical models: gemini-3-flash (default), gemini-3-flash-thinking, gemini-3-pro"
+    echo "Aliases supported: gemini-flash, gemini-thinking, gemini-pro, gemini-3.7-flash, gemini-3.1-pro, etc."
     exit 1
 fi
 
@@ -499,7 +500,7 @@ fi
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 if [ -f "$HOME/.bashrc" ]; then
-    source "$HOME/.bashrc" 2>/dev/null || true
+    . "$HOME/.bashrc" 2>/dev/null || true
 fi
 
 if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
@@ -507,12 +508,14 @@ if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
     (cd "$FASTAPI_DIR" && nohup "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &)
     
     PROXY_READY=0
-    for i in {1..20}; do
+    i=1
+    while [ $i -le 20 ]; do
         if nc -z localhost $FASTAPI_PORT 2>/dev/null; then
             PROXY_READY=1
             break
         fi
         sleep 1
+        i=$((i + 1))
     done
 
     if [ $PROXY_READY -eq 0 ]; then
@@ -522,16 +525,16 @@ if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
     fi
 fi
 
-CMD_ARGS=()
-if [ -n "$MODEL_ARG" ]; then
-    CMD_ARGS+=("-m" "$MODEL_ARG")
+# 3. Run Python agent (POSIX compatible argument passing)
+if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
+elif [ -n "$MODEL_ARG" ]; then
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" "$TASK_PROMPT"
+elif [ -n "$IMAGE_ARG" ]; then
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG" "$TASK_PROMPT"
+else
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "$TASK_PROMPT"
 fi
-if [ -n "$IMAGE_ARG" ]; then
-    CMD_ARGS+=("-i" "$IMAGE_ARG")
-fi
-CMD_ARGS+=("$TASK_PROMPT")
-
-exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "${CMD_ARGS[@]}"
 AGENT_EOF
 
 chmod +x "$HOME/agent.sh"
