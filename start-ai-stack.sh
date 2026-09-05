@@ -34,17 +34,19 @@ fi
 
 echo ""
 
-# 3. Start Open WebUI in the foreground
-echo "2. Starting Open WebUI on http://localhost:8080..."
+# 3. Start Open WebUI on localhost only (127.0.0.1)
+echo "2. Starting Open WebUI on http://127.0.0.1:8080 (localhost only)..."
+export WEBUI_HOST="127.0.0.1"
+export WEBUI_PORT="8080"
 cd "$INSTALL_DIR/open-webui"
 if [ -f ".venv/bin/open-webui" ]; then
-    exec .venv/bin/open-webui serve
+    exec .venv/bin/open-webui serve --host 127.0.0.1 --port 8080
 elif [ -f "$INSTALL_DIR/open-webui/.venv/bin/open-webui" ]; then
-    exec "$INSTALL_DIR/open-webui/.venv/bin/open-webui" serve
+    exec "$INSTALL_DIR/open-webui/.venv/bin/open-webui" serve --host 127.0.0.1 --port 8080
 else
     if [ -f ".venv/bin/activate" ]; then
         . .venv/bin/activate
     fi
-    exec open-webui serve
+    exec open-webui serve --host 127.0.0.1 --port 8080
 fi
 
