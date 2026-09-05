@@ -228,19 +228,30 @@ old_fn = """def _get_model_by_name(name: str) -> Model:
     return Model.from_name(name)"""
 
 new_fn = """MODEL_ALIASES = {
-    "gemini-3.7-flash": "gemini-3-flash",
-    "gemini-3.7-flash-thinking": "gemini-3-flash-thinking",
-    "gemini-3-flash-thinking": "gemini-3-flash-thinking",
-    "gemini-3.7-pro": "gemini-3-pro",
-    "gemini-3.1-pro": "gemini-3-pro",
+    # Live Gemini Web UI names & aliases
+    "gemini-3.8-flash": "gemini-3-flash",
+    "3.8-flash": "gemini-3-flash",
+    "3.8-Flash": "gemini-3-flash",
     "gemini-3.5-flash-lite": "gemini-3-flash",
-    "gemini-2.5-flash": "gemini-3-flash",
-    "gemini-2.5-pro": "gemini-3-pro",
-    "gemini-1.5-flash": "gemini-3-flash",
-    "gemini-1.5-pro": "gemini-3-pro",
+    "3.5-flash-lite": "gemini-3-flash",
+    "3.5-Flash-Lite": "gemini-3-flash",
+    "gemini-3.1-pro": "gemini-3-pro",
+    "3.1-pro": "gemini-3-pro",
+    "3.1-Pro": "gemini-3-pro",
+    "gemini-extended-thinking": "gemini-3-flash-thinking",
+    "extended-thinking": "gemini-3-flash-thinking",
+    "Extended thinking": "gemini-3-flash-thinking",
+    "gemini-3.7-flash": "gemini-3-flash",
+    "gemini-3.7-pro": "gemini-3-pro",
+    "gemini-3-flash": "gemini-3-flash",
+    "gemini-3-flash-thinking": "gemini-3-flash-thinking",
+    "gemini-3-pro": "gemini-3-pro",
+    "flash": "gemini-3-flash",
+    "thinking": "gemini-3-flash-thinking",
+    "pro": "gemini-3-pro",
     "gemini-flash": "gemini-3-flash",
-    "gemini-pro": "gemini-3-pro",
     "gemini-thinking": "gemini-3-flash-thinking",
+    "gemini-pro": "gemini-3-pro",
     "gpt-4o": "gemini-3-flash",
     "gpt-4": "gemini-3-pro",
     "gpt-3.5-turbo": "gemini-3-flash",
@@ -264,7 +275,64 @@ def _get_model_by_name(name: str) -> Model:
     try:
         return Model.from_name(resolved_name)
     except Exception:
-        return Model.BASIC_FLASH"""
+        return Model.BASIC_FLASH
+
+
+def _get_available_models() -> list[ModelData]:
+    \"\"\"Return a list of available models based on configuration strategy.\"\"\"
+    now = int(datetime.now(tz=UTC).timestamp())
+    strategy = g_config.gemini.model_strategy
+    models_data = []
+
+    custom_models = [m for m in g_config.gemini.models if m.model_name]
+    for m in custom_models:
+        models_data.append(
+            ModelData(
+                id=m.model_name,
+                created=now,
+                owned_by="custom",
+            )
+        )
+
+    priority_aliases = [
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-pro",
+        "gemini-extended-thinking",
+        "gemini-3-flash",
+        "gemini-3-flash-thinking",
+        "gemini-3-pro",
+        "flash",
+        "thinking",
+        "pro",
+    ]
+    for a in priority_aliases:
+        models_data.append(
+            ModelData(
+                id=a,
+                created=now,
+                owned_by="gemini-web",
+            )
+        )
+
+    if strategy == "append":
+        custom_ids = {m.model_name for m in custom_models} | set(priority_aliases)
+        for model in Model:
+            m_name = model.model_name
+            if not m_name or m_name == "unspecified":
+                continue
+            if m_name in custom_ids:
+                continue
+
+            models_data.append(
+                ModelData(
+                    id=m_name,
+                    created=now,
+                    owned_by="gemini-web",
+                )
+            )
+
+    return models_data"""
 
 if old_fn in txt:
     txt = txt.replace(old_fn, new_fn)
@@ -392,13 +460,36 @@ def get_auth_token():
         return os.environ["GEMINI_API_KEY"]
     return "not-needed"
 
+def get_available_models(api_base="http://127.0.0.1:8000/v1"):
+    import urllib.request
+    try:
+        req = urllib.request.Request(f"{api_base}/models", headers={"User-Agent": "smolagent-client"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return [m["id"] for m in data.get("data", []) if "id" in m]
+    except Exception:
+        return []
+
 def main():
     parser = argparse.ArgumentParser(description="Smolagent Runner")
-    parser.add_argument("-m", "--model", help="Model name (e.g. gemini-3-flash, gemini-3-flash-thinking, gemini-3-pro)", default=os.environ.get("MODEL", "gemini-3-flash"))
+    parser.add_argument("-m", "--model", help="Model name (or alias, e.g. flash, thinking, pro, 3.8-flash, 3.1-pro)", default=None)
     parser.add_argument("-f", "--file", help="Input text file path", default=None)
     parser.add_argument("-i", "--image", help="Input image path or folder", default=None)
+    parser.add_argument("-l", "--list-models", action="store_true", help="List available models from running FastAPI server")
     parser.add_argument("prompt", nargs="*", help="Prompt string")
     args = parser.parse_args()
+
+    api_base = "http://127.0.0.1:8000/v1"
+
+    if args.list_models:
+        models = get_available_models(api_base)
+        if models:
+            print("Available models from Gemini-FastAPI:")
+            for m in models:
+                print(f"  - {m}")
+        else:
+            print("No models returned or FastAPI server is unreachable at " + api_base)
+        sys.exit(0)
 
     full_prompt = " ".join(args.prompt).strip()
     if args.file and os.path.exists(args.file):
@@ -413,11 +504,16 @@ def main():
         os.environ.pop(k, None)
 
     auth_token = get_auth_token()
-    chosen_model = args.model or os.environ.get("MODEL", "gemini-3-flash")
+
+    # Dynamic model resolution from FastAPI
+    chosen_model = args.model or os.environ.get("MODEL")
+    if not chosen_model:
+        avail = get_available_models(api_base)
+        chosen_model = avail[0] if avail else "gemini-3-flash"
 
     model = OpenAIServerModel(
         model_id=chosen_model,
-        api_base="http://127.0.0.1:8000/v1",
+        api_base=api_base,
         api_key=auth_token or "not-needed"
     )
     agent = ToolCallingAgent(
@@ -445,6 +541,7 @@ PROMPT_TEXT=""
 FILE_ARG=""
 IMAGE_ARG=""
 MODEL_ARG=""
+LIST_MODELS=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -460,6 +557,10 @@ while [ $# -gt 0 ]; do
             MODEL_ARG="$2"
             shift 2
             ;;
+        -l|--list-models)
+            LIST_MODELS=1
+            shift
+            ;;
         *)
             if [ -z "$PROMPT_TEXT" ]; then
                 PROMPT_TEXT="$1"
@@ -471,16 +572,17 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-if [ -z "$PROMPT_TEXT" ] && [ ! -t 0 ]; then
-    PROMPT_TEXT=$(cat)
-fi
+if [ $LIST_MODELS -eq 0 ]; then
+    if [ -z "$PROMPT_TEXT" ] && [ ! -t 0 ]; then
+        PROMPT_TEXT=$(cat)
+    fi
 
-if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
-    echo "Error: No prompt, text file, or image provided."
-    echo "Usage: $0 [-m model] [-f file] [-i image_or_folder] \"Your prompt here\""
-    echo "Canonical models: gemini-3-flash (default), gemini-3-flash-thinking, gemini-3-pro"
-    echo "Aliases supported: gemini-flash, gemini-thinking, gemini-pro, gemini-3.7-flash, gemini-3.1-pro, etc."
-    exit 1
+    if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
+        echo "Error: No prompt, text file, or image provided."
+        echo "Usage: $0 [-m model] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+        echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
+        exit 1
+    fi
 fi
 
 TASK_PROMPT="$PROMPT_TEXT"
@@ -526,7 +628,9 @@ if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
 fi
 
 # 3. Run Python agent (POSIX compatible argument passing)
-if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
+if [ $LIST_MODELS -eq 1 ]; then
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -l
+elif [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
     exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
 elif [ -n "$MODEL_ARG" ]; then
     exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" "$TASK_PROMPT"

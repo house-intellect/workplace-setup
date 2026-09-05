@@ -533,7 +533,15 @@ try:
 
     meta_flash = json.dumps({
         "profile_image_url": "/static/favicon.png",
-        "description": "Gemini 3 Flash - Fast multimodal all-around model",
+        "description": "3.8 Flash - Fast multimodal all-around model",
+        "capabilities": {
+            "vision": True, "file_upload": True, "web_search": True,
+            "code_interpreter": True, "terminal": True, "builtin_tools": True
+        }
+    })
+    meta_lite = json.dumps({
+        "profile_image_url": "/static/favicon.png",
+        "description": "3.5 Flash-Lite - Fastest answers with lightweight inference",
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
@@ -541,7 +549,7 @@ try:
     })
     meta_thinking = json.dumps({
         "profile_image_url": "/static/favicon.png",
-        "description": "Gemini 3 Flash (Thinking) - Multimodal reasoning with internal chain-of-thought",
+        "description": "Extended Thinking - Multimodal reasoning with internal chain-of-thought",
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
@@ -549,52 +557,36 @@ try:
     })
     meta_pro = json.dumps({
         "profile_image_url": "/static/favicon.png",
-        "description": "Gemini 3 Pro - Flagship advanced reasoning with thinking process",
+        "description": "3.1 Pro - Flagship advanced reasoning and complex problem solving",
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
         }
     })
 
-    cursor.execute("""
-        INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-        VALUES ('gemini-3-flash', 'system', 'gemini-3-flash', 'Gemini 3 Flash', '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
-        ON CONFLICT(id) DO UPDATE SET
-            name=excluded.name,
-            meta=excluded.meta,
-            is_active=1,
-            updated_at=strftime('%s', 'now')
-    """, (meta_flash,))
+    models_to_register = [
+        ("gemini-3.8-flash", "3.8 Flash", meta_flash),
+        ("gemini-3.5-flash-lite", "3.5 Flash-Lite", meta_lite),
+        ("gemini-3.1-pro", "3.1 Pro", meta_pro),
+        ("gemini-extended-thinking", "Extended Thinking", meta_thinking),
+        ("gemini-3-flash", "Flash (Default)", meta_flash),
+        ("gemini-3-flash-thinking", "Flash Thinking", meta_thinking),
+        ("gemini-3-pro", "Pro", meta_pro),
+        ("flash", "Flash", meta_flash),
+        ("thinking", "Thinking", meta_thinking),
+        ("pro", "Pro", meta_pro),
+    ]
 
-    cursor.execute("""
-        INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-        VALUES ('gemini-3-flash-thinking', 'system', 'gemini-3-flash-thinking', 'Gemini 3 Flash (Thinking)', '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
-        ON CONFLICT(id) DO UPDATE SET
-            name=excluded.name,
-            meta=excluded.meta,
-            is_active=1,
-            updated_at=strftime('%s', 'now')
-    """, (meta_thinking,))
-
-    cursor.execute("""
-        INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-        VALUES ('gemini-3-pro', 'system', 'gemini-3-pro', 'Gemini 3 Pro', '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
-        ON CONFLICT(id) DO UPDATE SET
-            name=excluded.name,
-            meta=excluded.meta,
-            is_active=1,
-            updated_at=strftime('%s', 'now')
-    """, (meta_pro,))
-
-    cursor.execute("""
-        INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-        VALUES ('gemini-3.5-flash-lite', 'system', 'gemini-3.5-flash-lite', 'Gemini 3.5 Flash-Lite', '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
-        ON CONFLICT(id) DO UPDATE SET
-            name=excluded.name,
-            meta=excluded.meta,
-            is_active=1,
-            updated_at=strftime('%s', 'now')
-    """, (meta_lite,))
+    for m_id, m_name, m_meta in models_to_register:
+        cursor.execute("""
+            INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
+            VALUES (?, 'system', ?, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
+            ON CONFLICT(id) DO UPDATE SET
+                name=excluded.name,
+                meta=excluded.meta,
+                is_active=1,
+                updated_at=strftime('%s', 'now')
+        """, (m_id, m_id, m_name, m_meta))
 
 except Exception as e:
     print(f"Notice: Config / Model table update returned {e}")
