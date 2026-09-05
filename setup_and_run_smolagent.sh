@@ -208,6 +208,18 @@ if old_init in txt:
     fi
 fi
 
+# Ensure FastAPI binds to localhost only (127.0.0.1)
+if [ -f "$FASTAPI_DIR/app/utils/config.py" ]; then
+    "$PYTHON_EXEC" -c '
+from pathlib import Path
+p = Path("'"$FASTAPI_DIR"'/app/utils/config.py")
+txt = p.read_text()
+if "host: str = Field(default=\"0.0.0.0\"" in txt:
+    txt = txt.replace("host: str = Field(default=\"0.0.0.0\"", "host: str = Field(default=\"127.0.0.1\"")
+    p.write_text(txt)
+' 2>/dev/null || true
+fi
+
 if [ -f "$FASTAPI_DIR/app/server/chat.py" ]; then
     if ! grep -q "gemini-3.7-flash" "$FASTAPI_DIR/app/server/chat.py"; then
         "$PYTHON_EXEC" -c '
