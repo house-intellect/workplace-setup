@@ -1,12 +1,13 @@
-#!/bin/sh
+#!/bin/bash
 FASTAPI_PORT=8000
 FASTAPI_DIR="$HOME/local-ai-stack/gemini-fastapi"
 SCRIPT_PATH="$HOME/local-ai-stack/tool-calling-test/smolagent.py"
 
-# 1. Capture prompt, text files, and image arguments (POSIX compatible)
+# 1. Capture prompt, text files, image, and model arguments (POSIX compatible)
 PROMPT_TEXT=""
 FILE_ARG=""
 IMAGE_ARG=""
+MODEL_ARG=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -16,6 +17,10 @@ while [ $# -gt 0 ]; do
             ;;
         -i|--image)
             IMAGE_ARG="$2"
+            shift 2
+            ;;
+        -m|--model)
+            MODEL_ARG="$2"
             shift 2
             ;;
         *)
@@ -35,7 +40,8 @@ fi
 
 if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
     echo "Error: No prompt, text file, or image provided."
-    echo "Usage: $0 [-f file] [-i image_or_folder] \"Your prompt here\""
+    echo "Usage: $0 [-m model] [-f file] [-i image_or_folder] \"Your prompt here\""
+    echo "Available models: gemini-3.7-flash (default), gemini-3.7-flash-thinking, gemini-3.1-pro, gemini-3.5-flash-lite"
     exit 1
 fi
 
@@ -73,8 +79,14 @@ if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
 fi
 
 # 3. Run Python agent
-if [ -n "$IMAGE_ARG" ]; then
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG" "$TASK_PROMPT"
-else
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "$TASK_PROMPT"
+CMD_ARGS=()
+if [ -n "$MODEL_ARG" ]; then
+    CMD_ARGS+=("-m" "$MODEL_ARG")
 fi
+if [ -n "$IMAGE_ARG" ]; then
+    CMD_ARGS+=("-i" "$IMAGE_ARG")
+fi
+CMD_ARGS+=("$TASK_PROMPT")
+
+exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "${CMD_ARGS[@]}"
+

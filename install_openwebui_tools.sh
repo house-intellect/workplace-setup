@@ -507,8 +507,8 @@ try:
     """)
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
-        VALUES ('openai.api_configs', '{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-3.7-flash", "gemini-3.1-pro", "gemini-3.5-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', strftime('%s', 'now'))
-        ON CONFLICT(key) DO UPDATE SET value='{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-3.7-flash", "gemini-3.1-pro", "gemini-3.5-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', updated_at=strftime('%s', 'now')
+        VALUES ('openai.api_configs', '{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-3.7-flash", "gemini-3.7-flash-thinking", "gemini-3.1-pro", "gemini-3.5-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value='{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-3.7-flash", "gemini-3.7-flash-thinking", "gemini-3.1-pro", "gemini-3.5-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', updated_at=strftime('%s', 'now')
     """)
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
@@ -534,6 +534,14 @@ try:
     meta_flash = json.dumps({
         "profile_image_url": "/static/favicon.png",
         "description": "Gemini 3.7 Flash - Fast multimodal all-around model",
+        "capabilities": {
+            "vision": True, "file_upload": True, "web_search": True,
+            "code_interpreter": True, "terminal": True, "builtin_tools": True
+        }
+    })
+    meta_thinking = json.dumps({
+        "profile_image_url": "/static/favicon.png",
+        "description": "Gemini 3.7 Flash (Thinking) - Multimodal reasoning with internal chain-of-thought",
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
@@ -565,6 +573,16 @@ try:
             is_active=1,
             updated_at=strftime('%s', 'now')
     """, (meta_flash,))
+
+    cursor.execute("""
+        INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
+        VALUES ('gemini-3.7-flash-thinking', 'system', 'gemini-3.7-flash-thinking', 'Gemini 3.7 Flash (Thinking)', '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
+        ON CONFLICT(id) DO UPDATE SET
+            name=excluded.name,
+            meta=excluded.meta,
+            is_active=1,
+            updated_at=strftime('%s', 'now')
+    """, (meta_thinking,))
 
     cursor.execute("""
         INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
