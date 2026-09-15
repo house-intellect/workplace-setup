@@ -149,7 +149,7 @@ if app_init.exists():
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init
@@ -173,7 +173,7 @@ if wrap_file.exists():
         if self.curl_options is None:
             try:
                 from curl_cffi import CurlOpt
-                self.curl_options = {CurlOpt.DOH_URL: b"https://dns.comss.one/dns-query"}
+                self.curl_options = {CurlOpt.DOH_URL: b"https://xbox-dns.ru/dns-query"}
             except Exception:
                 self.curl_options = {}"""
         )
@@ -198,7 +198,7 @@ if helper_file.exists():
             "async with AsyncSession(impersonate=\"chrome\") as client:",
             """try:
             from curl_cffi import CurlOpt
-            h_opts = {CurlOpt.DOH_URL: b"https://dns.comss.one/dns-query"}
+            h_opts = {CurlOpt.DOH_URL: b"https://xbox-dns.ru/dns-query"}
         except Exception:
             h_opts = {}
         async with AsyncSession(impersonate="chrome", curl_options=h_opts) as client:"""
@@ -211,7 +211,7 @@ if pool_file.exists():
     ptxt = pool_file.read_text()
     if "GeminiClientSettings" not in ptxt:
         ptxt = ptxt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
-    if "dns.comss.one" not in ptxt:
+    if "xbox-dns.ru" not in ptxt:
         old_init = """        if len(g_config.gemini.clients) == 0:
             raise ValueError("No Gemini clients configured")
 
@@ -265,7 +265,7 @@ if pool_file.exists():
             curl_opts = {}
             try:
                 from curl_cffi import CurlOpt
-                curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+                curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
             except Exception:
                 pass
 
@@ -446,7 +446,7 @@ if old_fn in txt:
 ' 2>/dev/null || true
     fi
 fi
-# Ensure StrEnum compatibility & DNS / SNI Proxy (dns.comss.one) support in gemini_webapi
+# Ensure StrEnum compatibility & DNS / SNI Proxy (xbox-dns.ru) support in gemini_webapi
 "$PYTHON_EXEC" -c '
 import glob
 from pathlib import Path
@@ -469,7 +469,7 @@ for sp in glob.glob("'"$SMOL_DIR"'/.venv/lib/python*/site-packages"):
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init
@@ -501,7 +501,7 @@ except Exception:
             )
             txt = txt.replace(
                 "client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n    )",
-                "try:\n        from curl_cffi import CurlOpt\n        if curl_options is None:\n            curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n    except Exception:\n        pass\n    client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=curl_options\n    )"
+                "try:\n        from curl_cffi import CurlOpt\n        if curl_options is None:\n            curl_options = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n    except Exception:\n        pass\n    client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=curl_options\n    )"
             )
             gat_file.write_text(txt)
 
@@ -512,7 +512,7 @@ except Exception:
         if "self.curl_options" not in txt:
             txt = txt.replace(
                 "self.kwargs = kwargs",
-                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass"
+                "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass"
             )
             txt = txt.replace(
                 "verify=self.kwargs.get(\"verify\", True),",
@@ -528,7 +528,7 @@ except Exception:
             if "req_curl_opts" not in txt:
                 txt = txt.replace(
                     "req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n        )",
-                    "req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
+                    "req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
                 )
                 type_file.write_text(txt)
 
@@ -536,7 +536,7 @@ except Exception:
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
     if utils_file.exists():
         utxt = utils_file.read_text()
-        if "https://dns.comss.one/dns-query" not in utxt and "if curl_options:" in utxt:
+        if "https://xbox-dns.ru/dns-query" not in utxt and "if curl_options:" in utxt:
             utxt = utxt.replace(
                 "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
                 """    if curl_options is None:
@@ -544,7 +544,7 @@ except Exception:
     else:
         curl_options = dict(curl_options)
     if CurlOpt.DOH_URL not in curl_options:
-        curl_options[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+        curl_options[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
     for option, setting in curl_options.items():
         c.setopt(option, setting)"""
             )
@@ -762,7 +762,7 @@ if ! curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
     
     PROXY_READY=0
     i=1
-    while [ $i -le 30 ]; do
+    while [ $i -le 60 ]; do
         if curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
             PROXY_READY=1
             break

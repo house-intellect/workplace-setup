@@ -80,13 +80,17 @@ if ! curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
     (cd "$FASTAPI_DIR" && nohup "$PYTHON_EXEC" run.py > "$HOME/local-ai-stack/proxy_access.log" 2>&1 &)
     
     i=1
-    while [ $i -le 30 ]; do
+    while [ $i -le 60 ]; do
         if curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
             break
         fi
         sleep 1
         i=$((i + 1))
     done
+    if [ $i -gt 60 ]; then
+        echo "Error: Gemini-FastAPI server failed to initialize within 60 seconds."
+        exit 1
+    fi
 fi
 
 # 3. Run Python agent (POSIX compatible argument passing)
