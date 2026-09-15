@@ -75,13 +75,13 @@ if [ -f "$HOME/.bashrc" ]; then
     . "$HOME/.bashrc" 2>/dev/null || true
 fi
 
-if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
+if ! curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
     echo "Starting Gemini-FastAPI server on port $FASTAPI_PORT..."
     (cd "$FASTAPI_DIR" && nohup "$PYTHON_EXEC" run.py > "$HOME/local-ai-stack/proxy_access.log" 2>&1 &)
     
     i=1
-    while [ $i -le 20 ]; do
-        if nc -z localhost $FASTAPI_PORT 2>/dev/null; then
+    while [ $i -le 30 ]; do
+        if curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
             break
         fi
         sleep 1

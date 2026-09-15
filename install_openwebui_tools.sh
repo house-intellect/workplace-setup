@@ -142,16 +142,91 @@ fi
 import glob
 from pathlib import Path
 
-# 1. Patch Gemini-FastAPI pool.py if present
+# 1. Patch Gemini-FastAPI if present
 fastapi_dir = Path("'"$FASTAPI_DIR"'")
-pool_file = fastapi_dir / "app" / "services" / "pool.py"
-if pool_file.exists():
-    txt = pool_file.read_text()
-    if "dns.comss.one" not in txt:
-        if "GeminiClientSettings" not in txt:
-            txt = txt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
-        old_init = """        if len(g_config.gemini.clients) == 0:\n            raise ValueError("No Gemini clients configured")\n\n        for c in g_config.gemini.clients:"""
-        new_init = """        clients_to_load = list(g_config.gemini.clients)
+if fastapi_dir.exists():
+    # 1.1 Patch app/__init__.py for global BaseSession DoH default
+    app_init = fastapi_dir / "app" / "__init__.py"
+    if app_init.exists():
+        atxt = app_init.read_text()
+        if "CurlOpt.DOH_URL" not in atxt:
+            doh_code = """try:
+    from curl_cffi import CurlOpt
+    from curl_cffi.requests.session import BaseSession
+
+    _orig_base_init = BaseSession.__init__
+
+    def _doh_base_init(self, *args, **kwargs):
+        curl_opts = kwargs.get("curl_options")
+        if curl_opts is None:
+            curl_opts = {}
+            kwargs["curl_options"] = curl_opts
+        if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
+            curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+        _orig_base_init(self, *args, **kwargs)
+
+    BaseSession.__init__ = _doh_base_init
+except Exception:
+    pass
+
+"""
+            app_init.write_text(doh_code + atxt)
+
+    # 1.2 Patch app/services/client.py (GeminiClientWrapper curl_options)
+    wrap_file = fastapi_dir / "app" / "services" / "client.py"
+    if wrap_file.exists():
+        wtxt = wrap_file.read_text()
+        if "self.curl_options" not in wtxt:
+            wtxt = wtxt.replace(
+                "def __init__(self, client_id: str, **kwargs):\n        super().__init__(**kwargs)\n        self.id = client_id",
+                """def __init__(self, client_id: str, **kwargs):
+        super().__init__(**kwargs)
+        self.id = client_id
+        self.curl_options = kwargs.get("curl_options")
+        if self.curl_options is None:
+            try:
+                from curl_cffi import CurlOpt
+                self.curl_options = {CurlOpt.DOH_URL: b"https://dns.comss.one/dns-query"}
+            except Exception:
+                self.curl_options = {}"""
+            )
+            wtxt = wtxt.replace(
+                "verbose=verbose,\n            )",
+                """verbose=verbose,\n            )
+            if self.client and hasattr(self, "curl_options") and self.curl_options:
+                if not getattr(self.client, "curl_options", None):
+                    self.client.curl_options = dict(self.curl_options)
+                else:
+                    for k, v in self.curl_options.items():
+                        self.client.curl_options.setdefault(k, v)"""
+            )
+            wrap_file.write_text(wtxt)
+
+    # 1.3 Patch app/utils/helper.py (save_url_to_tempfile DoH)
+    helper_file = fastapi_dir / "app" / "utils" / "helper.py"
+    if helper_file.exists():
+        htxt = helper_file.read_text()
+        if "h_opts" not in htxt and "async with AsyncSession(impersonate=\"chrome\")" in htxt:
+            htxt = htxt.replace(
+                "async with AsyncSession(impersonate=\"chrome\") as client:",
+                """try:
+            from curl_cffi import CurlOpt
+            h_opts = {CurlOpt.DOH_URL: b"https://dns.comss.one/dns-query"}
+        except Exception:
+            h_opts = {}
+        async with AsyncSession(impersonate="chrome", curl_options=h_opts) as client:"""
+            )
+            helper_file.write_text(htxt)
+
+    # 1.4 Patch app/services/pool.py (Rookiepy extraction, prioritize Chrome, DoH)
+    pool_file = fastapi_dir / "app" / "services" / "pool.py"
+    if pool_file.exists():
+        ptxt = pool_file.read_text()
+        if "GeminiClientSettings" not in ptxt:
+            ptxt = ptxt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
+        if "dns.comss.one" not in ptxt:
+            old_init = """        if len(g_config.gemini.clients) == 0:\n            raise ValueError("No Gemini clients configured")\n\n        for c in g_config.gemini.clients:"""
+            new_init = """        clients_to_load = list(g_config.gemini.clients)
         if len(clients_to_load) == 0 or (
             len(clients_to_load) == 1
             and (
@@ -169,7 +244,10 @@ if pool_file.exists():
                         continue
                     try:
                         cookies = fn([".google.com"])
-                        cdict = {c["name"]: c["value"] for c in cookies if "1PSID" in c["name"]}
+                        cdict = {}
+                        for c in cookies:
+                            if c.get("domain") in [".google.com", "google.com"] and "1PSID" in c.get("name", ""):
+                                cdict[c["name"]] = c["value"]
                         if "__Secure-1PSID" in cdict and "__Secure-1PSIDTS" in cdict:
                             extracted_psid = cdict["__Secure-1PSID"]
                             extracted_psidts = cdict["__Secure-1PSIDTS"]
@@ -212,9 +290,55 @@ if pool_file.exists():
             self._round_robin.append(client)
             self._restart_locks[c.id] = asyncio.Lock()
         return"""
-        if old_init in txt:
-            txt = txt.replace(old_init, new_init)
-        pool_file.write_text(txt)
+            if old_init in ptxt:
+                ptxt = ptxt.replace(old_init, new_init)
+        if "[\"chrome\", \"chromium\", \"firefox\"" in ptxt:
+            ptxt = ptxt.replace("[\"chrome\", \"chromium\", \"firefox\"", "[\"firefox\", \"chrome\", \"chromium\"")
+        pool_file.write_text(ptxt)
+
+    # 1.5 Ensure config/config.yaml exists and does not hold expired dummy credentials
+    cfg_file = fastapi_dir / "config" / "config.yaml"
+    if not cfg_file.exists():
+        cfg_file.parent.mkdir(parents=True, exist_ok=True)
+        cfg_file.write_text("""server:
+  host: "127.0.0.1"
+  port: 8000
+  api_key: null
+  https:
+    enabled: false
+    key_file: "certs/privkey.pem"
+    cert_file: "certs/fullchain.pem"
+
+cors:
+  enabled: true
+  allow_origins: ["*"]
+  allow_credentials: true
+  allow_methods: ["*"]
+  allow_headers: ["*"]
+
+gemini:
+  clients:
+    - id: "primary-client"
+      secure_1psid: ""
+      secure_1psidts: ""
+      proxy: null
+  timeout: 600
+""")
+    else:
+        c_txt = cfg_file.read_text()
+        if "YOUR_SECURE" in c_txt or "g.a000CAm643nHGM8cJT" in c_txt:
+            import re
+            c_txt = re.sub(r'secure_1psid:\s*".*?"', 'secure_1psid: ""', c_txt)
+            c_txt = re.sub(r'secure_1psidts:\s*".*?"', 'secure_1psidts: ""', c_txt)
+            cfg_file.write_text(c_txt)
+
+    # 1.6 Ensure FastAPI binds to localhost only (127.0.0.1)
+    cfg_py = fastapi_dir / "app" / "utils" / "config.py"
+    if cfg_py.exists():
+        ctxt = cfg_py.read_text()
+        if "host: str = Field(default=\"0.0.0.0\"" in ctxt:
+            ctxt = ctxt.replace("host: str = Field(default=\"0.0.0.0\"", "host: str = Field(default=\"127.0.0.1\"")
+            cfg_py.write_text(ctxt)
 
 # 2. Patch gemini_webapi in all site-packages across stack and target venv
 search_roots = [
@@ -237,6 +361,33 @@ for root in search_roots:
                 p.write_text(txt)
 
         # Patch get_access_token.py
+        # Patch gemini_webapi/__init__.py for global BaseSession DoH
+        init_file = Path(f"{sp}/gemini_webapi/__init__.py")
+        if init_file.exists():
+            txt = init_file.read_text()
+            if "CurlOpt.DOH_URL" not in txt:
+                doh_code = """try:
+    from curl_cffi import CurlOpt
+    from curl_cffi.requests.session import BaseSession
+
+    _orig_base_init = BaseSession.__init__
+
+    def _doh_base_init(self, *args, **kwargs):
+        curl_opts = kwargs.get("curl_options")
+        if curl_opts is None:
+            curl_opts = {}
+            kwargs["curl_options"] = curl_opts
+        if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
+            curl_opts[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+        _orig_base_init(self, *args, **kwargs)
+
+    BaseSession.__init__ = _doh_base_init
+except Exception:
+    pass
+
+"""
+                init_file.write_text(doh_code + txt)
+
         gat_file = Path(f"{sp}/gemini_webapi/utils/get_access_token.py")
         if gat_file.exists():
             txt = gat_file.read_text()
@@ -277,6 +428,24 @@ for root in search_roots:
                         "req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {CurlOpt.DOH_URL: b\"https://dns.comss.one/dns-query\"}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
                     )
                     type_file.write_text(txt)
+
+        # Patch curl_cffi/requests/utils.py to guarantee DoH on ALL curl requests
+        utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
+        if utils_file.exists():
+            utxt = utils_file.read_text()
+            if "https://dns.comss.one/dns-query" not in utxt and "if curl_options:" in utxt:
+                utxt = utxt.replace(
+                    "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
+                    """    if curl_options is None:
+        curl_options = {}
+    else:
+        curl_options = dict(curl_options)
+    if CurlOpt.DOH_URL not in curl_options:
+        curl_options[CurlOpt.DOH_URL] = b"https://dns.comss.one/dns-query"
+    for option, setting in curl_options.items():
+        c.setopt(option, setting)"""
+                )
+                utils_file.write_text(utxt)
 ' 2>/dev/null || true
 
 # 4. Detect All Open WebUI webui.db Databases
