@@ -69,26 +69,33 @@ fi
 # 2. Start Gemini-FastAPI if needed
 PYTHON_EXEC="$HOME/local-ai-stack/tool-calling-test/.venv/bin/python"
 
-unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
-
 if [ -f "$HOME/.bashrc" ]; then
     . "$HOME/.bashrc" 2>/dev/null || true
 fi
 
-if ! curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+
+if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
     echo "Starting Gemini-FastAPI server on port $FASTAPI_PORT..."
-    (cd "$FASTAPI_DIR" && nohup "$PYTHON_EXEC" run.py > "$HOME/local-ai-stack/proxy_access.log" 2>&1 &)
+    (cd "$FASTAPI_DIR" && nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" run.py > "$HOME/local-ai-stack/proxy_access.log" 2>&1 &)
     
+    PROXY_READY=0
     i=1
     while [ $i -le 60 ]; do
-        if curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+        if curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+            PROXY_READY=1
             break
         fi
         sleep 1
         i=$((i + 1))
     done
-    if [ $i -gt 60 ]; then
-        echo "Error: Gemini-FastAPI server failed to initialize within 60 seconds."
+
+    if [ $PROXY_READY -eq 0 ]; then
+        echo "Error: Gemini-FastAPI server failed to start on port $FASTAPI_PORT."
+        if [ -f "$HOME/local-ai-stack/proxy_access.log" ]; then
+            echo "--- Server Log (last 20 lines) ---"
+            tail -n 20 "$HOME/local-ai-stack/proxy_access.log"
+        fi
         exit 1
     fi
 fi

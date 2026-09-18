@@ -1,47 +1,4 @@
 const puppeteer = require('puppeteer');
-const { execSync } = require('child_process');
-
-async function ensureBrowserRunning() {
-  try {
-    const res = await fetch('http://127.0.0.1:9222/json/version');
-    if (res.ok) return;
-  } catch (e) {
-    // Not running
-  }
-
-  let browserCmd = '';
-  let browserArgs = '';
-  try {
-    execSync('which firefox', { stdio: 'ignore' });
-    browserCmd = 'firefox';
-    browserArgs = '--remote-debugging-port 9222 --remote-allow-hosts localhost,127.0.0.1 --remote-allow-origins http://localhost:9222,http://127.0.0.1:9222';
-  } catch (e) {
-    try {
-      execSync('which google-chrome', { stdio: 'ignore' });
-      browserCmd = 'google-chrome';
-      browserArgs = '--remote-debugging-port=9222';
-    } catch (err) {
-      try {
-        execSync('which chromium-browser || which chromium', { stdio: 'ignore' });
-        browserCmd = 'chromium';
-        browserArgs = '--remote-debugging-port=9222';
-      } catch (e2) {
-        browserCmd = 'yandex-browser';
-        browserArgs = '--remote-debugging-port=9222';
-      }
-    }
-  }
-
-  execSync(`nohup ${browserCmd} ${browserArgs} > /dev/null 2>&1 &`);
-
-  for (let i = 0; i < 20; i++) {
-    try {
-      const res = await fetch('http://127.0.0.1:9222/json/version');
-      if (res.ok) return;
-    } catch (e) {}
-    await new Promise((r) => setTimeout(r, 500));
-  }
-}
 
 class BrowserAgent {
   constructor() {
@@ -49,200 +6,522 @@ class BrowserAgent {
   }
 
   async init() {
-    await ensureBrowserRunning();
-    const versionResp = await fetch('http://127.0.0.1:9222/json/version');
-    const versionData = await versionResp.json();
-    this.browser = await puppeteer.connect({
-      browserWSEndpoint:
-        'ws://127.0.0.1:9222/devtools/browser/' +
-        versionData.webSocketDebuggerUrl.split('/').pop(),
-      defaultViewport: null,
+    try {
+      const versionResp = await fetch('http://127.0.0.1:9222/json/version');
+      if (!versionResp.ok) {
+        throw new Error(`HTTP ${versionResp.status} from 127.0.0.1:9222`);
+      }
+      const versionData = await versionResp.json();
+      const wsUrl =
+        versionData.webSocketDebuggerUrl ||
+        ('ws://127.0.0.1:9222/devtools/browser/' + versionData.webSocketDebuggerUrl?.split('/').pop());
+      this.browser = await puppeteer.connect({
+        browserWSEndpoint: wsUrl,
+        defaultViewport: null,
+      });
+    } catch (err) {
+      throw new Error(
+        `Failed to connect to browser on 127.0.0.1:9222 (${err.message}). Ensure Yandex Browser is running with: yandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins="*"`
+      );
+    }
+  }
+
+  async getActivePage() {
+    const pages = await this.browser.pages();
+    if (!pages || pages.length === 0) {
+      throw new Error('No open pages/tabs found in browser. Please open a tab.');
+    }
+
+    // 1. Prioritize actively visible/focused tab in browser window
+    for (const p of pages) {
+      try {
+        const u = p.url().toLowerCase();
+        if (u.startsWith('devtools://') || u.startsWith('chrome://') || u.includes('search?') || u.includes('/search')) {
+          continue;
+        }
+        const isVisible = await p.evaluate(() => document.visibilityState === 'visible');
+        if (isVisible) {
+          return p;
+        }
+      } catch (e) {}
+    }
+
+    // 2. Look for test / quiz URLs
+    const testPage = pages.find((p) => {
+      const u = p.url().toLowerCase();
+      if (u.startsWith('devtools://') || u.startsWith('chrome://') || u.includes('search?') || u.includes('/search')) {
+        return false;
+      }
+      return (
+        u.includes('hh.ru') ||
+        u.includes('uquiz.com') ||
+        u.includes('/quiz') ||
+        u.includes('/test') ||
+        u.includes('assessment') ||
+        u.includes('verifications')
+      );
     });
+
+    if (testPage) return testPage;
+
+    // 3. Fallback to last non-devtools page
+    const normalPages = pages.filter((p) => {
+      const u = p.url().toLowerCase();
+      return !u.startsWith('devtools://') && !u.startsWith('chrome://') && !u.includes('search?') && !u.includes('/search');
+    });
+    return normalPages[normalPages.length - 1] || pages[0];
   }
 
   async getPage() {
-    const pages = await this.browser.pages();
-    return pages[0] || (await this.browser.newPage());
+    return await this.getActivePage();
   }
 
-  async getSemanticMap() {
-    const page = await this.getPage();
-    return await page.evaluate(() => {
-      const selector = 'a, button, input, textarea, label, [role="button"], [role="radio"], [role="tab"], [data-marker], div[class*="category"], div[class*="item"], div[class*="card"]';
-      const actionable = Array.from(document.querySelectorAll(selector))
-        .filter((el) => {
-          const style = window.getComputedStyle(el);
-          return (
-            el.offsetWidth > 0 &&
-            el.offsetHeight > 0 &&
-            style.display !== 'none' &&
-            style.visibility !== 'hidden'
+  async waitForQuiz(previousQuestion = '') {
+    const inPageExtractOrWait = (prevQ) => {
+      return new Promise((resolve) => {
+        function extractQuizState() {
+          const bodyText = document.body ? document.body.innerText : '';
+          // Ignore lobby / entry / waiting screens and course catalogs
+          if (
+            window.location.href.includes('/courses') ||
+            window.location.pathname.startsWith('/courses') ||
+            bodyText.includes('Waiting for players') ||
+            bodyText.includes('Join on this device') ||
+            bodyText.includes('Join at:')
+          ) {
+            return null;
+          }
+
+          function getDesc(el, idx) {
+            const rawVal = el.value && el.value !== 'on' ? el.value : '';
+            let t = (el.innerText || rawVal || el.getAttribute('aria-label') || '').trim();
+            if (!t && el.parentElement) {
+              t = (el.parentElement.innerText || '').trim();
+            }
+            if (!t) {
+              const img = el.querySelector('img');
+              if (img) {
+                t = img.getAttribute('alt') || img.getAttribute('title') || `Image ${idx + 1}`;
+              }
+            }
+            return t || `Option ${idx + 1}`;
+          }
+
+          // 1. Look for choices: check image options first, then standard choice rows
+          const imageCards = Array.from(
+            document.querySelectorAll('.image_option, [class*="image_option"]')
+          ).filter((el) => {
+            const style = window.getComputedStyle(el);
+            return (
+              style.display !== 'none' &&
+              style.visibility !== 'hidden' &&
+              (el.offsetWidth > 0 || el.querySelector('img') !== null)
+            );
+          });
+
+          let candidates = [];
+          if (imageCards.length >= 2) {
+            candidates = imageCards;
+          } else {
+            candidates = Array.from(
+              document.querySelectorAll(
+                '.answer_row, label[for*="PossibleAnswer"], input[type="radio"], input[type="checkbox"], [class*="answer_row"], button[role="radio"], [role="radio"], [role="checkbox"]'
+              )
+            ).filter((el) => {
+              const text = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+              const style = window.getComputedStyle(el);
+              return (
+                el.offsetWidth > 0 &&
+                el.offsetHeight > 0 &&
+                style.display !== 'none' &&
+                style.visibility !== 'hidden' &&
+                !text.toLowerCase().includes('take later') &&
+                !text.toLowerCase().includes('enter your name')
+              );
+            });
+          }
+
+          // Candidates must be explicit radios, checkboxes, answer rows, or image options
+
+          // 2. Check for open-ended text input / textarea
+          const textInputs = Array.from(
+            document.querySelectorAll('input[type="text"], input:not([type]), textarea')
+          ).filter((el) => {
+            if (
+              el.id === 'TakerName' ||
+              el.name === 'TakerName' ||
+              (el.placeholder || '').toLowerCase().includes('name')
+            ) {
+              return false;
+            }
+            const style = window.getComputedStyle(el);
+            return (
+              el.offsetWidth > 0 &&
+              el.offsetHeight > 0 &&
+              style.display !== 'none' &&
+              style.visibility !== 'hidden'
+            );
+          });
+
+          const isChoice = candidates.length >= 2;
+          const isOpenEnded = !isChoice && textInputs.length > 0;
+
+          if (!isChoice && !isOpenEnded) {
+            return null;
+          }
+
+          // Question prompt
+          const headings = Array.from(
+            document.querySelectorAll(
+              '[class*="markdown"], [class*="markup"], .question_text, [data-qa*="question"], h1, h2, h3, [class*="question"], [class*="title"], legend'
+            )
+          )
+            .map((h) => (h.innerText || '').trim())
+            .filter((t) => t.length > 5 && !t.includes('Take later') && !t.includes('Завершить') && !t.includes('Всего осталось') && t.length < 1500);
+
+          const questionText = headings[0] || document.title || 'Quiz Question';
+
+          // Match against previous question
+          if (prevQ) {
+            const qNumMatch = questionText.match(/question\s+(\d+)/i);
+            const prevNumMatch = prevQ.match(/question\s+(\d+)/i);
+            if (qNumMatch && prevNumMatch && qNumMatch[1] === prevNumMatch[1]) {
+              return null;
+            }
+            if (
+              questionText === prevQ ||
+              questionText.includes(prevQ) ||
+              prevQ.includes(questionText) ||
+              window.location.href === prevQ ||
+              window.location.href.endsWith(prevQ)
+            ) {
+              return null;
+            }
+          }
+
+          if (isOpenEnded) {
+            return {
+              status: 'ready',
+              type: 'open_ended',
+              question: questionText,
+              url: window.location.href,
+            };
+          }
+
+          // Deduplicate candidate options
+          const seen = new Set();
+          const uniqueCandidates = [];
+          for (let i = 0; i < candidates.length; i++) {
+            const c = candidates[i];
+            const t = getDesc(c, i);
+            if (t && !seen.has(t)) {
+              seen.add(t);
+              uniqueCandidates.push(c);
+            }
+          }
+
+          if (uniqueCandidates.length < 2) {
+            return null;
+          }
+
+          const isMulti = uniqueCandidates.some(
+            (c) => c.getAttribute('role') === 'checkbox' || c.type === 'checkbox'
           );
-        })
-        .map((el) => ({
-          text: (
-            el.innerText ||
-            el.value ||
-            el.placeholder ||
-            el.getAttribute('aria-label') ||
-            el.getAttribute('title') ||
-            ''
-          ).trim(),
-          tagName: el.tagName,
-          dataMarker: el.getAttribute('data-marker'),
-          type: el.type || el.getAttribute('role') || null,
-        }))
-        .filter(
-          (el) =>
-            (el.text.length > 0 && el.text.length < 150) ||
-            el.tagName === 'INPUT' ||
-            el.tagName === 'TEXTAREA'
-        );
-      return {
-        url: window.location.href,
-        title: document.title,
-        actionable: actionable.slice(0, 150),
-      };
-    });
-  }
 
-  async performAction(type, target, value = '') {
-    const page = await this.getPage();
-    if (type === 'goto') {
-      await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60000 });
-      return { success: true, url: page.url(), title: await page.title() };
-    }
-    if (type === 'screenshot') {
-      let path = 'browser_screenshot.png';
-      if (target && !target.startsWith('http://') && !target.startsWith('https://') && target !== 'page') {
-        path = target;
-      }
-      await page.screenshot({ path });
-      return { success: true, screenshot_path: path };
-    }
+          const options = uniqueCandidates.map((el, idx) => {
+            const radio = el.querySelector('input[type="radio"], input[type="checkbox"]');
+            return {
+              id: idx,
+              text: getDesc(el, idx),
+              isSelected: el.classList.contains('selected') || (radio && radio.checked) || el.checked === true,
+            };
+          });
 
-    const el = await page.evaluateHandle((type, target) => {
-      // 1. Check if target is a CSS selector (e.g. input[data-marker="..."] or button[...])
-      if (target.includes('[') || target.includes('.') || target.includes('#')) {
+          return {
+            status: 'ready',
+            type: 'choice',
+            question: questionText,
+            isMulti,
+            options,
+            url: window.location.href,
+          };
+        }
+
+        const initial = extractQuizState();
+        if (initial) return resolve(initial);
+
+        const observer = new MutationObserver(() => {
+          const state = extractQuizState();
+          if (state) {
+            cleanup();
+            resolve(state);
+          }
+        });
+
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          characterData: true,
+        });
+
+        const timer = setInterval(() => {
+          const state = extractQuizState();
+          if (state) {
+            cleanup();
+            resolve(state);
+          }
+        }, 400);
+
+        const clickHandler = () => {
+          setTimeout(() => {
+            const state = extractQuizState();
+            if (state) {
+              cleanup();
+              resolve(state);
+            }
+          }, 300);
+        };
+        document.addEventListener('click', clickHandler, { capture: true });
+
+        function cleanup() {
+          observer.disconnect();
+          clearInterval(timer);
+          document.removeEventListener('click', clickHandler, { capture: true });
+        }
+      });
+    };
+
+    while (true) {
+      const quizPage = await this.getActivePage();
+      if (quizPage) {
         try {
-          const matchBySelector = document.querySelector(target);
-          if (matchBySelector) return matchBySelector;
+          const state = await Promise.race([
+            quizPage.evaluate(inPageExtractOrWait, previousQuestion),
+            new Promise((r) => setTimeout(() => r(null), 3000)),
+          ]);
+          if (state && state.status === 'ready') {
+            return state;
+          }
         } catch (e) {}
       }
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
 
-      const selector = 'a, button, input, textarea, label, [role="button"], [role="radio"], [role="tab"], [data-marker], div, span';
-      const elements = Array.from(document.querySelectorAll(selector));
-      const targetLower = target.trim().toLowerCase();
-
-      // 2. Combined Exact Match (Matches both text AND data-marker if available)
-      let match = elements.find(
-        (el) =>
-          el.innerText &&
-          el.innerText.trim() === target &&
-          (!el.getAttribute('data-marker') || el.getAttribute('data-marker') === target)
+  async selectOption(target) {
+    const page = await this.getPage();
+    return await page.evaluate((target) => {
+      let candidates = Array.from(
+        document.querySelectorAll(
+          '.image_option, [class*="image_option"], .answer_row, [class*="answer_row"], label[for*="PossibleAnswer"], input[type="radio"], input[type="checkbox"], button[role="radio"], [role="radio"]'
+        )
       );
 
-      // 3. Exact match by text, value, placeholder, or aria-label
-      if (!match) {
-        match = elements.find(
-          (el) =>
-            (el.innerText && el.innerText.trim() === target) ||
-            (el.value && el.value.trim() === target) ||
-            (el.placeholder && el.placeholder === target) ||
-            (el.getAttribute('aria-label') === target)
-        );
+      const imgOpts = candidates.filter((el) => el.classList && (el.classList.contains('image_option') || el.className.includes('image_option')));
+      if (imgOpts.length >= 2) {
+        candidates = imgOpts;
       }
 
-      // 4. Match data-marker if target equals exact data-marker value
-      if (!match) {
-        match = elements.find(
-          (el) => el.getAttribute('data-marker') && el.getAttribute('data-marker') === target
-        );
-      }
-
-      // 5. Partial text match fallback (case-insensitive)
-      if (!match) {
-        match = elements.find(
-          (el) =>
-            el.innerText &&
-            el.innerText.trim().toLowerCase().includes(targetLower) &&
-            el.innerText.trim().length < 150
-        );
-      }
-
-      return match;
-    }, type, target);
-
-    if (!el) throw new Error(`Element matching '${target}' not found on page`);
-
-    if (type === 'click') {
-      try {
-        await page.evaluate((el) => el.scrollIntoView({ block: 'center', inline: 'center' }), el);
-        await new Promise(r => setTimeout(r, 300));
-        await el.click();
-      } catch (err) {
-        // Fallback: click bounding box center physically via page.mouse
-        const box = await el.boundingBox();
-        if (box) {
-          await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-        } else {
-          await page.evaluate((el) => {
-            const opts = { bubbles: true, cancelable: true, view: window };
-            try { el.dispatchEvent(new PointerEvent('pointerdown', opts)); } catch(e) {}
-            try { el.dispatchEvent(new MouseEvent('mousedown', opts)); } catch(e) {}
-            try { el.dispatchEvent(new PointerEvent('pointerup', opts)); } catch(e) {}
-            try { el.dispatchEvent(new MouseEvent('mouseup', opts)); } catch(e) {}
-            try { el.dispatchEvent(new MouseEvent('click', opts)); } catch(e) {}
-            if (typeof el.click === 'function') el.click();
-          }, el);
-        }
-      }
-      await new Promise(r => setTimeout(r, 1000));
-    }
-
-    if (type === 'input') {
-      const isInput = await page.evaluate((el) => {
-        if (!el) return false;
-        let inputEl = el;
-        if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') {
-          inputEl = el.querySelector('input, textarea') ||
-                    (el.htmlFor ? document.getElementById(el.htmlFor) : null) ||
-                    el.closest('label, div, section, fieldset')?.querySelector('input, textarea');
-        }
-        if (!inputEl) return false;
-        try {
-          inputEl.focus();
-          inputEl.value = '';
-        } catch(e) {}
-        return true;
-      }, el);
-
-      if (!isInput) {
-        // Fallback: try finding any active or visible input on the page
-        const inputs = await page.$$('input[type="text"], input:not([type]), textarea');
-        if (inputs.length > 0) {
-          await inputs[0].focus();
-          await inputs[0].type(value, { delay: 50 });
-          return { success: true, url: page.url() };
-        }
-        throw new Error(`Could not find an input field matching '${target}'`);
-      }
-
-      // Type text cleanly into target element handle
-      try {
-        await el.type(value, { delay: 50 });
-      } catch (err) {
-        await page.evaluate((el, val) => {
-          let inputEl = (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') ? el : el.querySelector('input, textarea');
-          if (inputEl) {
-            inputEl.value = val;
-            inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-            inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+      function getDesc(el, idx) {
+        let t = (el.innerText || el.value || el.getAttribute('aria-label') || '').trim();
+        if (!t) {
+          const img = el.querySelector('img');
+          if (img) {
+            t = img.getAttribute('alt') || img.getAttribute('title') || `Image ${idx + 1}`;
           }
-        }, el, value);
+        }
+        return (t || `Option ${idx + 1}`).toLowerCase().trim();
+      }
+
+      const targetStr = String(target).toLowerCase().trim();
+      let match = null;
+      let matchedIndex = -1;
+
+      // 1. Direct text / descriptor match
+      candidates.forEach((el, idx) => {
+        if (match) return;
+        const desc = getDesc(el, idx);
+        if (desc === targetStr || desc.startsWith(targetStr)) {
+          match = el;
+          matchedIndex = idx;
+        }
+      });
+
+      // 2. Substring match
+      if (!match) {
+        candidates.forEach((el, idx) => {
+          if (match) return;
+          const desc = getDesc(el, idx);
+          if (desc.includes(targetStr) || targetStr.includes(desc)) {
+            match = el;
+            matchedIndex = idx;
+          }
+        });
+      }
+
+      // 3. Numeric / "image X" index match (e.g. "image 1" -> 0, or "2" -> 1)
+      if (!match) {
+        const numMatch = targetStr.match(/(?:image|option)?\s*(\d+)/i);
+        if (numMatch) {
+          const num = parseInt(numMatch[1], 10);
+          if (num >= 1 && num <= candidates.length) {
+            match = candidates[num - 1];
+            matchedIndex = num - 1;
+          } else if (num >= 0 && num < candidates.length) {
+            match = candidates[num];
+            matchedIndex = num;
+          }
+        }
+      }
+
+      if (!match && candidates.length > 0) {
+        match = candidates[0];
+        matchedIndex = 0;
+      }
+
+      if (!match) {
+        throw new Error(`Option matching '${target}' not found.`);
+      }
+
+      match.scrollIntoView({ block: 'center', inline: 'center' });
+
+      // Click radio / checkbox / image / label
+      const radio = match.querySelector('input[type="radio"], input[type="checkbox"]') || (match.tagName === 'INPUT' ? match : null);
+      const clickable = match.querySelector('img, label, .checkbox, .image') || match;
+
+      clickable.click();
+      if (radio) {
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change', { bubbles: true }));
+        radio.dispatchEvent(new Event('click', { bubbles: true }));
+      }
+
+      const labelText = getDesc(match, matchedIndex);
+      return {
+        success: true,
+        selectedText: labelText,
+      };
+    }, target);
+  }
+
+  formatTabs(text) {
+    if (!text) return text;
+    return text.split('\n').map((line) => {
+      let spaces = 0;
+      while (spaces < line.length && line[spaces] === ' ') {
+        spaces++;
+      }
+      if (spaces === 0) return line;
+      const tabs = Math.floor(spaces / 4);
+      const remSpaces = spaces % 4;
+      return '\t'.repeat(tabs) + (remSpaces >= 2 ? '\t' : '') + line.slice(spaces);
+    }).join('\n');
+  }
+
+  async typeAnswer(text, delayMs = 200) {
+    const page = await this.getPage();
+    text = this.formatTabs(text);
+
+    const hasMonaco = await page.evaluate(() => {
+      return typeof window.monaco !== 'undefined' && window.monaco?.editor?.getEditors()?.length > 0;
+    });
+
+    if (hasMonaco) {
+      await page.evaluate(() => {
+        const editors = window.monaco.editor.getEditors();
+        const ed = editors[0];
+        ed.updateOptions({
+          autoClosingBrackets: 'never',
+          autoClosingQuotes: 'never',
+          autoSurround: 'never',
+          autoIndent: 'none',
+          quickSuggestions: false,
+          suggestOnTriggerCharacters: false,
+          acceptSuggestionOnEnter: 'off',
+          tabCompletion: 'off',
+          wordBasedSuggestions: 'off'
+        });
+        ed.focus();
+      });
+
+      // Clear existing content cleanly via keyboard
+      await page.keyboard.down('Control');
+      await page.keyboard.press('KeyA');
+      await page.keyboard.up('Control');
+      await page.keyboard.press('Backspace');
+
+      // Type character by character with delayMs delay
+      for (let i = 0; i < text.length; i++) {
+        const char = text[i];
+        if (char === '\n') {
+          await page.keyboard.press('Enter');
+        } else if (char === '\t') {
+          await page.keyboard.press('Tab');
+        } else {
+          await page.keyboard.type(char);
+        }
+        if (delayMs > 0) {
+          // slight random jitter around delayMs for human realism (+-15%)
+          const jitter = Math.floor(delayMs * 0.85 + Math.random() * (delayMs * 0.3));
+          await new Promise((r) => setTimeout(r, jitter));
+        }
+      }
+
+      return {
+        success: true,
+        target: 'monaco',
+        typedLength: text.length,
+        speedMs: delayMs,
+      };
+    }
+
+    const inputHandle = await page.evaluateHandle(() => {
+      const inputs = Array.from(
+        document.querySelectorAll('input[type="text"], input:not([type]), textarea')
+      ).filter((el) => {
+        if (
+          el.id === 'TakerName' ||
+          el.name === 'TakerName' ||
+          (el.placeholder || '').toLowerCase().includes('name')
+        ) {
+          return false;
+        }
+        const style = window.getComputedStyle(el);
+        return el.offsetWidth > 0 && el.offsetHeight > 0 && style.display !== 'none';
+      });
+      return inputs[0] || null;
+    });
+
+    const el = inputHandle.asElement();
+    if (!el) {
+      throw new Error('No open-ended input or textarea found on current page.');
+    }
+
+    await el.focus();
+    await page.evaluate((elem) => { elem.value = ''; }, el);
+    for (let i = 0; i < text.length; i++) {
+      const char = text[i];
+      if (char === '\t') {
+        await page.keyboard.press('Tab');
+      } else {
+        await el.type(char);
+      }
+      if (delayMs > 0) {
+        const jitter = Math.floor(delayMs * 0.85 + Math.random() * (delayMs * 0.3));
+        await new Promise((r) => setTimeout(r, jitter));
       }
     }
-    return { success: true, url: page.url() };
+    await page.evaluate((elem) => {
+      elem.dispatchEvent(new Event('input', { bubbles: true }));
+      elem.dispatchEvent(new Event('change', { bubbles: true }));
+    }, el);
+
+    return {
+      success: true,
+      typedText: text,
+      speedMs: delayMs,
+    };
   }
 
   async close() {
@@ -251,26 +530,32 @@ class BrowserAgent {
 }
 
 (async () => {
-  const [command, target, value] = process.argv.slice(2);
+  const [command, arg1, arg2] = process.argv.slice(2);
   const agent = new BrowserAgent();
   await agent.init();
   try {
-    if (command === 'map')
-      console.log(JSON.stringify(await agent.getSemanticMap(), null, 2));
-    else if (command === 'goto')
-      console.log(JSON.stringify(await agent.performAction('goto', target)));
-    else if (command === 'screenshot')
-      console.log(
-        JSON.stringify(await agent.performAction('screenshot', target))
-      );
-    else if (command === 'click')
-      console.log(JSON.stringify(await agent.performAction('click', target)));
-    else if (command === 'input')
-      console.log(
-        JSON.stringify(await agent.performAction('input', target, value))
-      );
+    if (command === 'wait-quiz') {
+      const res = await agent.waitForQuiz(arg1 || '');
+      console.log(JSON.stringify(res, null, 2));
+    } else if (command === 'select') {
+      const res = await agent.selectOption(arg1);
+      console.log(JSON.stringify(res, null, 2));
+    } else if (command === 'type') {
+      const delay = arg2 ? parseInt(arg2, 10) : 200;
+      const res = await agent.typeAnswer(arg1, delay);
+      console.log(JSON.stringify(res, null, 2));
+    } else if (command === 'type-file') {
+      const fs = require('fs');
+      const content = fs.readFileSync(arg1, 'utf8');
+      const delay = arg2 ? parseInt(arg2, 10) : 200;
+      const res = await agent.typeAnswer(content, delay);
+      console.log(JSON.stringify(res, null, 2));
+    } else {
+      console.log(JSON.stringify({ error: `Unknown command: ${command}` }));
+    }
   } catch (err) {
     console.error(JSON.stringify({ error: err.message }));
+    process.exit(1);
   } finally {
     await agent.close();
   }

@@ -11,6 +11,7 @@ echo "=================================================="
 
 # 1. Clear conflicting proxy environment variables
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+export HF_HUB_OFFLINE=1
 
 # 2. Start Gemini-FastAPI server in the background if not already running
 if ! nc -z localhost $FASTAPI_PORT 2>/dev/null; then
@@ -35,7 +36,14 @@ fi
 echo ""
 
 # 3. Start Open WebUI on localhost only (127.0.0.1)
+if nc -z 127.0.0.1 8080 2>/dev/null; then
+    echo "2. Open WebUI is already running on http://127.0.0.1:8080."
+    exit 0
+fi
+
 echo "2. Starting Open WebUI on http://127.0.0.1:8080 (localhost only)..."
+export HOST="127.0.0.1"
+export PORT="8080"
 export WEBUI_HOST="127.0.0.1"
 export WEBUI_PORT="8080"
 cd "$INSTALL_DIR/open-webui"

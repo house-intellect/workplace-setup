@@ -359,6 +359,13 @@ for root in search_roots:
                     "from enum import Enum, IntEnum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    class StrEnum(str, Enum):\n        pass"
                 )
                 p.write_text(txt)
+        # Patch open_webui to bind strictly to localhost (127.0.0.1) instead of 0.0.0.0
+        for webui_init in [Path(sp) / "open_webui" / "__init__.py"]:
+            if webui_init.exists():
+                wtxt = webui_init.read_text()
+                if "host: str = '0.0.0.0'" in wtxt:
+                    wtxt = wtxt.replace("host: str = '0.0.0.0'", "host: str = '127.0.0.1'")
+                    webui_init.write_text(wtxt)
 
         # Patch get_access_token.py
         # Patch gemini_webapi/__init__.py for global BaseSession DoH
@@ -765,5 +772,11 @@ conn.close()
 print("Successfully registered native_bash_tool, agentic_browser_tool, and Gemini-FastAPI true models in DB!")
 PY_EOF
 done
+
+# 5. Ensure start-ai-stack.sh in local-ai-stack is synchronized with localhost binding
+if [ -f "$SCRIPT_DIR/start-ai-stack.sh" ] && [ -d "$HOME/local-ai-stack" ]; then
+    cp "$SCRIPT_DIR/start-ai-stack.sh" "$HOME/local-ai-stack/start-ai-stack.sh"
+    chmod +x "$HOME/local-ai-stack/start-ai-stack.sh"
+fi
 
 echo "Open WebUI installation and tool sync complete!"

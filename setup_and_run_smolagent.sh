@@ -551,10 +551,15 @@ except Exception:
             utils_file.write_text(utxt)
 ' 2>/dev/null || true
 
-# Check/Install agentic-browser skill dependencies
+# Check/Install agentic-browser and quizmaster skill dependencies
 mkdir -p "$SKILL_DIR"
 if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
     cp -r "$SCRIPT_DIR/agentic-browser/"* "$SKILL_DIR/"
+fi
+QUIZ_DIR="$HOME/.agents/skills/quizmaster"
+mkdir -p "$QUIZ_DIR"
+if [ -d "$SCRIPT_DIR/quizmaster" ]; then
+    cp -r "$SCRIPT_DIR/quizmaster/"* "$QUIZ_DIR/"
 fi
 if [ ! -d "$SKILL_DIR/node_modules" ]; then
     if command -v npm &>/dev/null; then
@@ -605,6 +610,226 @@ def execute_bash(command: str) -> str:
         return "Command timed out after 120 seconds."
     except Exception as e:
         return f"Execution error: {str(e)}"
+
+@tool
+def quizmaster(max_questions: int = 0) -> str:
+    """
+    Runs the QuizMaster interactive assistant on the connected browser session (port 9222) in an indefinite loop.
+    Monitors the active browser tab for quiz questions (both multiple-choice options/checkboxes and open-ended text inputs),
+    uses the AI model to determine the best answer, non-intrusively selects the option or types the answer (~200ms/char),
+    and waits for the user to proceed to the next question.
+    Runs indefinitely until the quiz ends or until interrupted (Ctrl+C).
+
+    Args:
+        max_questions: Maximum number of questions to process (default is 0, which means run indefinitely in a loop until stopped or finished). Pass 1 to answer only the current question.
+    """
+    import subprocess
+    import os
+    import json
+    import time
+    import urllib.request
+
+    script_path = os.path.expanduser("~/.agents/skills/agentic-browser/scripts/agent.js")
+    prev_q = ""
+    answered_count = 0
+    results_summary = []
+
+    print("\n[QuizMaster] Activated. Connecting to active browser on port 9222...", flush=True)
+    print("[QuizMaster] Running in live loop. Non-intrusive: answers are selected/typed without submitting.", flush=True)
+    print("[QuizMaster] Press Ctrl+C at any time to stop.\n", flush=True)
+
+    try:
+        while True:
+            if max_questions > 0 and answered_count >= max_questions:
+                print(f"[QuizMaster] Reached limit of {max_questions} questions.", flush=True)
+                break
+
+            cmd = ["node", script_path, "wait-quiz"]
+            if prev_q:
+                cmd.append(prev_q)
+
+            try:
+                res = subprocess.run(cmd, capture_output=True, text=True)
+            except Exception as e:
+                print(f"[QuizMaster] Execution error: {e}", flush=True)
+                break
+
+            out_text = res.stdout.strip()
+            if not out_text:
+                err_text = res.stderr.strip()
+                if "Failed to connect to browser" in err_text:
+                    msg = "Failed to connect to browser on port 9222. Please start Yandex Browser with:\nyandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins=\"*\""
+                    print(f"[QuizMaster] {msg}", flush=True)
+                    return msg
+                print(f"[QuizMaster] No question received. Exiting.", flush=True)
+                break
+
+            try:
+                state = json.loads(out_text)
+            except Exception:
+                print(f"[QuizMaster] Output was not valid JSON: {out_text[:200]}", flush=True)
+                break
+
+            if state.get("status") != "ready":
+                print(f"[QuizMaster] Quiz state: {state}", flush=True)
+                break
+
+            q_text = state.get("question", "")
+            q_type = state.get("type", "choice")
+            options = state.get("options", [])
+            is_multi = state.get("isMulti", False)
+            url = state.get("url", "")
+
+            print(f"\n==================================================", flush=True)
+            print(f"[QuizMaster] Question {answered_count + 1}:", flush=True)
+            print(f"{q_text}", flush=True)
+            print(f"Type: {q_type} | URL: {url}", flush=True)
+            if options:
+                print("Options:", flush=True)
+                for opt in options:
+                    print(f"  - {opt.get('text')}", flush=True)
+
+            # Query local Gemini-FastAPI model endpoint for best answer
+            prompt_content = f"You are an expert quiz solver. Question:\n{q_text}\n\n"
+            if q_type == "choice":
+                opts_str = "\n".join([f"- {opt.get('text')}" for opt in options])
+                prompt_content += (
+                    f"Options:\n{opts_str}\n\n"
+                    "Select the best/most appropriate option from the list above. "
+                    "Return ONLY the exact text of the single selected option, verbatim. Do not explain."
+                )
+            else:
+                prompt_content += (
+                    "This is an open-ended question. "
+                    "Provide a short, direct, appropriate answer to type into the text box. "
+                    "Return ONLY the answer text, verbatim. Do not explain."
+                )
+
+            answer_text = ""
+            try:
+                req = urllib.request.Request(
+                    "http://127.0.0.1:8000/v1/chat/completions",
+                    headers={"Content-Type": "application/json"},
+                    data=json.dumps({
+                        "model": "gemini-3.8-flash",
+                        "messages": [{"role": "user", "content": prompt_content}]
+                    }).encode("utf-8")
+                )
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                with opener.open(req, timeout=30) as resp:
+                    resp_data = json.loads(resp.read().decode("utf-8"))
+                    answer_text = resp_data["choices"][0]["message"]["content"].strip()
+            except Exception as e:
+                print(f"[QuizMaster] Error querying model: {e}", flush=True)
+                answer_text = options[0]["text"] if options else "Answer"
+
+            clean_answer = answer_text.strip('"`*')
+            print(f"[QuizMaster] Suggested answer: '{clean_answer}'", flush=True)
+
+            if q_type == "choice":
+                sel_res = subprocess.run(["node", script_path, "select", clean_answer], capture_output=True, text=True, timeout=30)
+                print(f"[QuizMaster] Option selected: {sel_res.stdout.strip() or clean_answer}", flush=True)
+                results_summary.append(f"Q: {q_text.splitlines()[0]} -> Selected: {clean_answer}")
+            else:
+                type_res = subprocess.run(["node", script_path, "type", clean_answer, "200"], capture_output=True, text=True, timeout=90)
+                print(f"[QuizMaster] Typed answer at ~200ms/char: {clean_answer}", flush=True)
+                results_summary.append(f"Q: {q_text.splitlines()[0]} -> Typed: {clean_answer}")
+
+            answered_count += 1
+            prev_q = q_text
+
+            if max_questions > 0 and answered_count >= max_questions:
+                break
+
+            print(f"\n[QuizMaster] Answer applied! Proceed to next question in browser (Ctrl+C to stop)...", flush=True)
+            time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\n[QuizMaster] Loop interrupted by user (Ctrl+C).", flush=True)
+
+    return f"QuizMaster completed. Processed {answered_count} question(s):\n" + "\n".join(results_summary)
+
+@tool
+def wait_for_quiz_question(previous_question: str = "") -> str:
+    """
+    Waits in blocking mode for an active quiz question to appear or update in the connected Yandex/Chromium browser session on port 9222.
+    Returns JSON containing the detected question text, question type ('choice' or 'open_ended'), options, and page url.
+
+    Args:
+        previous_question: Optional text or number of the previously answered question (e.g. 'Question 1 of 7') to avoid duplicate triggers.
+    """
+    import subprocess
+    import os
+    script_path = os.path.expanduser("~/.agents/skills/agentic-browser/scripts/agent.js")
+    cmd = ["node", script_path, "wait-quiz"]
+    if previous_question:
+        cmd.append(previous_question)
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        return res.stdout.strip() or res.stderr.strip() or "No quiz question detected."
+    except subprocess.TimeoutExpired:
+        return "Timeout waiting for quiz question."
+    except Exception as e:
+        return f"Error executing wait-quiz: {str(e)}"
+
+@tool
+def select_quiz_option(option_text_or_index: str) -> str:
+    """
+    Non-intrusively selects a multiple-choice radio button, checkbox, or option button on the active quiz page in the browser without submitting.
+
+    Args:
+        option_text_or_index: The exact or partial label text of the option, or its 0-based index.
+    """
+    import subprocess
+    import os
+    script_path = os.path.expanduser("~/.agents/skills/agentic-browser/scripts/agent.js")
+    cmd = ["node", script_path, "select", option_text_or_index]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return res.stdout.strip() or res.stderr.strip() or "Option selected."
+    except Exception as e:
+        return f"Error executing select: {str(e)}"
+
+@tool
+def type_quiz_answer(answer_text: str, delay_ms: int = 200) -> str:
+    """
+    Simulates realistic human typing into an open-ended quiz input field or textarea at the specified keystroke speed (~200ms per character).
+
+    Args:
+        answer_text: The answer string to type into the open-ended question text field.
+        delay_ms: Delay in milliseconds between each typed character (default is 200ms).
+    """
+    import subprocess
+    import os
+    script_path = os.path.expanduser("~/.agents/skills/agentic-browser/scripts/agent.js")
+    cmd = ["node", script_path, "type", answer_text, str(delay_ms)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
+        return res.stdout.strip() or res.stderr.strip() or "Answer typed."
+    except Exception as e:
+        return f"Error executing type: {str(e)}"
+
+@tool
+def type_quiz_file(file_path: str, delay_ms: int = 200) -> str:
+    """
+    Types code or text from a file into the active Monaco editor or open-ended text input at ~200ms/char with tab indentation.
+
+    Args:
+        file_path: Absolute or relative path to the file whose contents should be typed.
+        delay_ms: Delay in milliseconds between keystrokes (default 200ms).
+    """
+    import subprocess
+    import os
+    script_path = os.path.expanduser("~/.agents/skills/agentic-browser/scripts/agent.js")
+    resolved_path = os.path.abspath(os.path.expanduser(file_path))
+    if not os.path.exists(resolved_path):
+        return f"Error: File {resolved_path} does not exist."
+    cmd = ["node", script_path, "type-file", resolved_path, str(delay_ms)]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        return res.stdout.strip() or res.stderr.strip() or "File typed successfully."
+    except Exception as e:
+        return f"Error executing type-file: {str(e)}"
 
 def get_auth_token():
     if os.environ.get("GEMINI_API_KEY"):
@@ -668,7 +893,7 @@ def main():
         api_key=auth_token or "not-needed"
     )
     agent = ToolCallingAgent(
-        tools=[execute_bash],
+        tools=[quizmaster, execute_bash, wait_for_quiz_question, select_quiz_option, type_quiz_answer, type_quiz_file],
         model=model
     )
     response = agent.run(full_prompt)
@@ -750,20 +975,20 @@ $FILE_CONTENT"
     fi
 fi
 
-unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
-
 if [ -f "$HOME/.bashrc" ]; then
     . "$HOME/.bashrc" 2>/dev/null || true
 fi
 
-if ! curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+
+if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
     echo "Starting Gemini-FastAPI server on port $FASTAPI_PORT..."
-    (cd "$FASTAPI_DIR" && nohup "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &)
+    (cd "$FASTAPI_DIR" && nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &)
     
     PROXY_READY=0
     i=1
     while [ $i -le 60 ]; do
-        if curl -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+        if curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
             PROXY_READY=1
             break
         fi
