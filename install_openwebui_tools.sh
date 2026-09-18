@@ -6,11 +6,15 @@ TARGET_DIR="${1:-$SCRIPT_DIR/open-webui}"
 
 echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 
-# 1. Deploy agentic-browser skill to home directory
-echo "[1/4] Deploying agentic-browser skill..."
+# 1. Deploy agentic-browser and quizmaster skills to home directory
+echo "[1/4] Deploying agentic-browser and quizmaster skills..."
 mkdir -p "$HOME/.agents/skills/agentic-browser"
 if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
     cp -r "$SCRIPT_DIR/agentic-browser/"* "$HOME/.agents/skills/agentic-browser/"
+fi
+mkdir -p "$HOME/.agents/skills/quizmaster"
+if [ -d "$SCRIPT_DIR/quizmaster" ]; then
+    cp -r "$SCRIPT_DIR/quizmaster/"* "$HOME/.agents/skills/quizmaster/"
 fi
 
 if [ -f "$HOME/.agents/skills/agentic-browser/package.json" ]; then
