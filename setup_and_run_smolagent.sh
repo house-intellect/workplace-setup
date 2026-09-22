@@ -1,4 +1,8 @@
 #!/bin/bash
+# Self-reexec with bash if invoked with sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    exec /usr/bin/env bash "$0" "$@"
+fi
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -14,13 +18,13 @@ echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash)
 # 1. System Dependency Checks
 echo "[1/4] Checking system dependencies..."
 for cmd in curl; do
-    if ! command -v "$cmd" &>/dev/null; then
+    if ! command -v "$cmd" >/dev/null 2>&1; then
         echo "Error: Required command '$cmd' is not installed or not in PATH."
         exit 1
     fi
 done
 
-if ! command -v git &>/dev/null; then
+if ! command -v git >/dev/null 2>&1; then
     echo "Notice: 'git' is not found in PATH; using local offline repository folders if present."
 fi
 
@@ -112,7 +116,7 @@ if [ ! -f "$FASTAPI_DIR/run.py" ]; then
         echo "Running directly inside Gemini-FastAPI folder. Deploying to $FASTAPI_DIR..."
         mkdir -p "$FASTAPI_DIR"
         cp -r "$SCRIPT_DIR/"* "$FASTAPI_DIR/"
-    elif command -v git &>/dev/null; then
+    elif command -v git >/dev/null 2>&1; then
         echo "Cloning Gemini-FastAPI from GitHub..."
         git clone https://github.com/Nativu5/Gemini-FastAPI.git "$FASTAPI_DIR" || {
             echo "Error: Failed to clone Gemini-FastAPI and no pre-downloaded folder found."
@@ -805,7 +809,7 @@ if [ -d "$SCRIPT_DIR/quizmaster" ]; then
     cp -r "$SCRIPT_DIR/quizmaster/"* "$QUIZ_DIR/"
 fi
 if [ ! -d "$SKILL_DIR/node_modules" ]; then
-    if command -v npm &>/dev/null; then
+    if command -v npm >/dev/null 2>&1; then
         (cd "$SKILL_DIR" && npm init -y >/dev/null 2>&1 || true)
         (cd "$SKILL_DIR" && npm install puppeteer --no-audit --no-fund 2>/dev/null || true)
     fi

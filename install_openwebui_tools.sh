@@ -1,4 +1,8 @@
 #!/bin/bash
+# Self-reexec with bash if invoked with sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    exec /usr/bin/env bash "$0" "$@"
+fi
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,7 +24,7 @@ fi
 
 if [ -f "$HOME/.agents/skills/agentic-browser/package.json" ]; then
     if [ ! -d "$HOME/.agents/skills/agentic-browser/node_modules" ]; then
-        if command -v npm &>/dev/null; then
+        if command -v npm >/dev/null 2>&1; then
             echo "Installing puppeteer dependencies for agentic-browser skill..."
             (cd "$HOME/.agents/skills/agentic-browser" && npm install --no-audit --no-fund 2>/dev/null || true)
         fi
@@ -46,7 +50,7 @@ if [ ! -d "$TARGET_DIR" ] || [ ! -f "$TARGET_DIR/package.json" -a ! -d "$TARGET_
     elif [ -d "$HOME/local-ai-stack/open-webui" ] && [ -f "$HOME/local-ai-stack/open-webui/package.json" ]; then
         echo "Using existing Open WebUI repository at $HOME/local-ai-stack/open-webui..."
         TARGET_DIR="$HOME/local-ai-stack/open-webui"
-    elif command -v git &>/dev/null; then
+    elif command -v git >/dev/null 2>&1; then
         echo "Open WebUI not found locally. Cloning official repository..."
         git clone https://github.com/open-webui/open-webui.git "$TARGET_DIR" || {
             echo "Error: Failed to clone open-webui from GitHub and no local pre-downloaded folder found."
@@ -92,7 +96,7 @@ check_python_version() {
 
 PY_CMD=""
 for p in python3.12 python3.11 python3; do
-    if command -v "$p" &>/dev/null && check_python_version "$(command -v "$p")"; then
+    if command -v "$p" >/dev/null 2>&1 && check_python_version "$(command -v "$p")"; then
         PY_CMD="$(command -v "$p")"
         break
     fi
@@ -736,7 +740,7 @@ fi
 
 # Detect Ollama presence on system
 OLLAMA_PRESENT="false"
-if command -v ollama &>/dev/null; then
+if command -v ollama >/dev/null 2>&1; then
     OLLAMA_PRESENT="true"
     echo "Ollama detected on system: will keep Ollama integration enabled."
 else
