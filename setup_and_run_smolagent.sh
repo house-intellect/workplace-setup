@@ -159,34 +159,104 @@ except Exception:
 """
         app_init.write_text(doh_code + txt)
 
-# 2. Patch app/services/client.py (GeminiClientWrapper curl_options)
+# 2. Patch app/services/client.py (GeminiClientWrapper curl_options & AccountStatus check)
 wrap_file = fastapi_dir / "app" / "services" / "client.py"
 if wrap_file.exists():
     wtxt = wrap_file.read_text()
-    if "self.curl_options" not in wtxt:
-        wtxt = wtxt.replace(
-            "def __init__(self, client_id: str, **kwargs):\n        super().__init__(**kwargs)\n        self.id = client_id",
-            """def __init__(self, client_id: str, **kwargs):
+    if "hard_blocks" not in wtxt or "GEMINI_DOH_URL" not in wtxt:
+        new_client_code = """class GeminiClientWrapper(GeminiClient):
+    \"\"\"Gemini client with helper methods.\"\"\"
+
+    def __init__(self, client_id: str, **kwargs):
         super().__init__(**kwargs)
         self.id = client_id
+        import os
+        doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        if isinstance(doh_endpoint, str):
+            doh_endpoint = doh_endpoint.encode()
+        if secure_1psidcc := kwargs.get("secure_1psidcc"):
+            self._cookies.set("__Secure-1PSIDCC", secure_1psidcc, domain=".google.com")
         self.curl_options = kwargs.get("curl_options")
         if self.curl_options is None:
             try:
                 from curl_cffi import CurlOpt
-                self.curl_options = {CurlOpt.DOH_URL: b"https://xbox-dns.ru/dns-query"}
+                self.curl_options = {CurlOpt.DOH_URL: doh_endpoint}
             except Exception:
-                self.curl_options = {}"""
-        )
-        wtxt = wtxt.replace(
-            "verbose=verbose,\n            )",
-            """verbose=verbose,\n            )
-            if self.client and hasattr(self, "curl_options") and self.curl_options:
+                self.curl_options = {}
+        elif isinstance(self.curl_options, dict):
+            try:
+                from curl_cffi import CurlOpt
+                if CurlOpt.DOH_URL not in self.curl_options:
+                    self.curl_options[CurlOpt.DOH_URL] = doh_endpoint
+            except Exception:
+                pass
+
+    async def init(
+        self,
+        timeout: float = cast(float, _UNSET),
+        watchdog_timeout: float = cast(float, _UNSET),
+        auto_close: bool = False,
+        close_delay: float = cast(float, _UNSET),
+        auto_refresh: bool = cast(bool, _UNSET),
+        refresh_interval: float = cast(float, _UNSET),
+        verbose: bool = cast(bool, _UNSET),
+    ) -> None:
+        config = g_config.gemini
+        timeout = cast(float, _resolve(timeout, config.timeout))
+        watchdog_timeout = cast(float, _resolve(watchdog_timeout, config.watchdog_timeout))
+        close_delay = timeout
+        auto_refresh = cast(bool, _resolve(auto_refresh, config.auto_refresh))
+        refresh_interval = cast(float, _resolve(refresh_interval, config.refresh_interval))
+        verbose = cast(bool, _resolve(verbose, config.verbose))
+
+        try:
+            await super().init(
+                timeout=timeout,
+                watchdog_timeout=watchdog_timeout,
+                auto_close=auto_close,
+                close_delay=close_delay,
+                auto_refresh=auto_refresh,
+                refresh_interval=refresh_interval,
+                verbose=verbose,
+            )
+            from gemini_webapi.constants import AccountStatus
+            hard_blocks = [
+                AccountStatus.LOCATION_REJECTED,
+                AccountStatus.ACCOUNT_REJECTED,
+                AccountStatus.ACCESS_TEMPORARILY_UNAVAILABLE,
+                AccountStatus.ACCOUNT_REJECTED_BY_GUARDIAN,
+                AccountStatus.GUARDIAN_APPROVAL_REQUIRED,
+            ]
+            if hasattr(self, "account_status") and self.account_status in hard_blocks:
+                self._running = False
+                logger.warning(
+                    f"Gemini client {self.id} account status is {self.account_status}, marking client not running."
+                )
+            elif self.client and hasattr(self, "curl_options") and self.curl_options:
                 if not getattr(self.client, "curl_options", None):
                     self.client.curl_options = dict(self.curl_options)
                 else:
                     for k, v in self.curl_options.items():
-                        self.client.curl_options.setdefault(k, v)"""
-        )
+                        self.client.curl_options.setdefault(k, v)
+        except Exception:
+            logger.exception(f"Failed to initialize GeminiClient {self.id}")
+            raise
+
+    def running(self) -> bool:
+        from gemini_webapi.constants import AccountStatus
+        hard_blocks = [
+            AccountStatus.LOCATION_REJECTED,
+            AccountStatus.ACCOUNT_REJECTED,
+            AccountStatus.ACCESS_TEMPORARILY_UNAVAILABLE,
+            AccountStatus.ACCOUNT_REJECTED_BY_GUARDIAN,
+            AccountStatus.GUARDIAN_APPROVAL_REQUIRED,
+        ]
+        if hasattr(self, "account_status") and self.account_status in hard_blocks:
+            return False
+        return self._running
+"""
+        import re
+        wtxt = re.sub(r'class GeminiClientWrapper\(GeminiClient\):.*?def running\(self\) -> bool:\s+return self\._running', new_client_code.strip(), wtxt, flags=re.DOTALL)
         wrap_file.write_text(wtxt)
 
 # 3. Patch app/utils/helper.py (save_url_to_tempfile DoH)
@@ -198,25 +268,33 @@ if helper_file.exists():
             "async with AsyncSession(impersonate=\"chrome\") as client:",
             """try:
             from curl_cffi import CurlOpt
-            h_opts = {CurlOpt.DOH_URL: b"https://xbox-dns.ru/dns-query"}
+            import os
+            _doh = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+            if isinstance(_doh, str):
+                _doh = _doh.encode()
+            h_opts = {CurlOpt.DOH_URL: _doh}
         except Exception:
             h_opts = {}
         async with AsyncSession(impersonate="chrome", curl_options=h_opts) as client:"""
         )
         helper_file.write_text(htxt)
 
-# 4. Patch app/services/pool.py (Rookiepy extraction, prioritize Chrome, DoH)
+# 4. Patch app/services/pool.py (Rookiepy multi-browser extraction, fallback, DoH)
 pool_file = fastapi_dir / "app" / "services" / "pool.py"
 if pool_file.exists():
     ptxt = pool_file.read_text()
     if "GeminiClientSettings" not in ptxt:
         ptxt = ptxt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")
-    if "xbox-dns.ru" not in ptxt:
-        old_init = """        if len(g_config.gemini.clients) == 0:
-            raise ValueError("No Gemini clients configured")
+    new_pool_code = """class GeminiClientPool(metaclass=Singleton):
+    \"\"\"Pool of GeminiClient instances identified by unique ids.\"\"\"
 
-        for c in g_config.gemini.clients:"""
-        new_init = """        clients_to_load = list(g_config.gemini.clients)
+    def __init__(self) -> None:
+        self._clients: list[GeminiClientWrapper] = []
+        self._id_map: dict[str, GeminiClientWrapper] = {}
+        self._round_robin: deque[GeminiClientWrapper] = deque()
+        self._restart_locks: dict[str, asyncio.Lock] = {}
+
+        clients_to_load = list(g_config.gemini.clients)
         if len(clients_to_load) == 0 or (
             len(clients_to_load) == 1
             and (
@@ -224,48 +302,78 @@ if pool_file.exists():
                 or "YOUR_SECURE" in str(clients_to_load[0].secure_1psid)
             )
         ):
-            extracted_psid = None
-            extracted_psidts = None
+            # Prioritize Firefox first: reads cookies.sqlite directly without triggering OS keyring / KWallet / SecretService GUI prompts.
+            found_clients = []
             try:
                 import rookiepy
-                for b_name in ["firefox", "chrome", "chromium", "brave", "edge", "opera"]:
+                for b_name in ["firefox"]:
                     fn = getattr(rookiepy, b_name, None)
                     if not fn:
                         continue
                     try:
                         cookies = fn([".google.com"])
-                        cdict = {}
-                        for c in cookies:
-                            if c.get("domain") in [".google.com", "google.com"] and "1PSID" in c.get("name", ""):
-                                cdict[c["name"]] = c["value"]
-                        if "__Secure-1PSID" in cdict and "__Secure-1PSIDTS" in cdict:
-                            extracted_psid = cdict["__Secure-1PSID"]
-                            extracted_psidts = cdict["__Secure-1PSIDTS"]
-                            logger.info(f"Auto-extracted Gemini session cookies from {b_name}.")
-                            break
-                    except Exception:
-                        continue
+                        cdict = {c["name"]: c["value"] for c in cookies if c.get("domain") in [".google.com", "google.com"]}
+                        psid = cdict.get("__Secure-1PSID")
+                        psidts = cdict.get("__Secure-1PSIDTS")
+                        psidcc = cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC")
+                        if psid and psidts:
+                            logger.info(f"Auto-extracted Gemini session cookies from {b_name} (no keyring required).")
+                            found_clients.append(
+                                GeminiClientSettings(
+                                    id=f"auto-{b_name}",
+                                    secure_1psid=psid,
+                                    secure_1psidts=psidts,
+                                    secure_1psidcc=psidcc,
+                                    proxy=None,
+                                )
+                            )
+                    except Exception as e:
+                        logger.debug(f"Firefox extraction failed: {e}")
+
+                if not found_clients:
+                    for b_name in ["chrome", "chromium", "brave", "edge", "opera"]:
+                        fn = getattr(rookiepy, b_name, None)
+                        if not fn:
+                            continue
+                        try:
+                            cookies = fn([".google.com"])
+                            cdict = {c["name"]: c["value"] for c in cookies if c.get("domain") in [".google.com", "google.com"]}
+                            psid = cdict.get("__Secure-1PSID")
+                            psidts = cdict.get("__Secure-1PSIDTS")
+                            psidcc = cdict.get("__Secure-1PSIDCC") or cdict.get("__Secure-3PSIDCC") or cdict.get("SIDCC")
+                            if psid and psidts:
+                                logger.info(f"Auto-extracted Gemini session cookies from {b_name}.")
+                                found_clients.append(
+                                    GeminiClientSettings(
+                                        id=f"auto-{b_name}",
+                                        secure_1psid=psid,
+                                        secure_1psidts=psidts,
+                                        secure_1psidcc=psidcc,
+                                        proxy=None,
+                                    )
+                                )
+                                break
+                        except Exception:
+                            continue
             except Exception as e:
                 logger.warning(f"Could not import rookiepy or extract cookies: {e}")
 
-            if extracted_psid and extracted_psidts:
-                clients_to_load = [
-                    GeminiClientSettings(
-                        id="auto-browser",
-                        secure_1psid=extracted_psid,
-                        secure_1psidts=extracted_psidts,
-                        proxy=None,
-                    )
-                ]
+            if found_clients:
+                clients_to_load = found_clients
 
         if len(clients_to_load) == 0:
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
+
+        import os
+        doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        if isinstance(doh_url, str):
+            doh_url = doh_url.encode()
 
         for c in clients_to_load:
             curl_opts = {}
             try:
                 from curl_cffi import CurlOpt
-                curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+                curl_opts[CurlOpt.DOH_URL] = doh_url
             except Exception:
                 pass
 
@@ -273,6 +381,7 @@ if pool_file.exists():
                 client_id=c.id,
                 secure_1psid=c.secure_1psid,
                 secure_1psidts=c.secure_1psidts,
+                secure_1psidcc=getattr(c, "secure_1psidcc", None),
                 proxy=c.proxy,
                 curl_options=curl_opts,
             )
@@ -280,12 +389,107 @@ if pool_file.exists():
             self._id_map[c.id] = client
             self._round_robin.append(client)
             self._restart_locks[c.id] = asyncio.Lock()
-        return"""
-        if old_init in ptxt:
-            ptxt = ptxt.replace(old_init, new_init)
-    # Ensure Firefox is prioritized over Chrome if previously patched
-    if "[\"chrome\", \"chromium\", \"firefox\"" in ptxt:
-        ptxt = ptxt.replace("[\"chrome\", \"chromium\", \"firefox\"", "[\"firefox\", \"chrome\", \"chromium\"")
+
+    async def init(self) -> None:
+        \"\"\"Initialize all clients in the pool.\"\"\"
+        success_count = 0
+        for client in self._clients:
+            if not client.running():
+                try:
+                    await client.init(
+                        timeout=g_config.gemini.timeout,
+                        watchdog_timeout=g_config.gemini.watchdog_timeout,
+                        auto_refresh=g_config.gemini.auto_refresh,
+                        verbose=g_config.gemini.verbose,
+                        refresh_interval=g_config.gemini.refresh_interval,
+                    )
+                except Exception:
+                    logger.exception(f"Failed to initialize client {client.id}")
+
+            if client.running():
+                success_count += 1
+
+        if success_count == 0:
+            logger.warning("No configured Gemini clients available. Attempting live browser re-extraction...")
+            try:
+                import rookiepy
+                import os
+                from curl_cffi import CurlOpt
+                doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+                if isinstance(doh_url, str):
+                    doh_url = doh_url.encode()
+                for b_name in ["firefox", "chrome", "chromium", "brave"]:
+                    fn = getattr(rookiepy, b_name, None)
+                    if not fn:
+                        continue
+                    try:
+                        cookies = fn([".google.com"])
+                        cdict = {c["name"]: c["value"] for c in cookies if c.get("domain") in [".google.com", "google.com"] and "1PSID" in c.get("name", "")}
+                        if "__Secure-1PSID" in cdict and "__Secure-1PSIDTS" in cdict:
+                            fallback_client = GeminiClientWrapper(
+                                client_id=f"live-{b_name}",
+                                secure_1psid=cdict["__Secure-1PSID"],
+                                secure_1psidts=cdict["__Secure-1PSIDTS"],
+                                secure_1psidcc=cdict.get("__Secure-1PSIDCC"),
+                                proxy=None,
+                                curl_options={CurlOpt.DOH_URL: doh_url},
+                            )
+                            await fallback_client.init(
+                                timeout=g_config.gemini.timeout,
+                                watchdog_timeout=g_config.gemini.watchdog_timeout,
+                                auto_refresh=g_config.gemini.auto_refresh,
+                                verbose=g_config.gemini.verbose,
+                                refresh_interval=g_config.gemini.refresh_interval,
+                            )
+                            if fallback_client.running():
+                                self._clients.append(fallback_client)
+                                self._id_map[fallback_client.id] = fallback_client
+                                self._round_robin.append(fallback_client)
+                                self._restart_locks[fallback_client.id] = asyncio.Lock()
+                                success_count += 1
+                                logger.info(f"Activated live browser client {fallback_client.id}")
+                                break
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.warning(f"Browser re-extraction failed: {e}")
+
+        if success_count == 0:
+            raise RuntimeError("Failed to initialize any Gemini clients")
+
+    async def acquire(self, client_id: str | None = None) -> GeminiClientWrapper:
+        \"\"\"Return a healthy client by id or using round-robin.\"\"\"
+        if not self._round_robin:
+            raise RuntimeError("No Gemini clients configured")
+
+        if client_id:
+            client = self._id_map.get(client_id)
+            if not client:
+                raise ValueError(f"Client id {client_id} not found")
+            if await self._ensure_client_ready(client):
+                return client
+            raise RuntimeError(
+                f"Gemini client {client_id} is not running and could not be restarted"
+            )
+
+        for _ in range(len(self._round_robin)):
+            client = self._round_robin[0]
+            self._round_robin.rotate(-1)
+            if await self._ensure_client_ready(client):
+                return client
+
+        await self.init()
+        for _ in range(len(self._round_robin)):
+            client = self._round_robin[0]
+            self._round_robin.rotate(-1)
+            if await self._ensure_client_ready(client):
+                return client
+
+        raise RuntimeError("No Gemini clients are currently available")
+"""
+    import re
+    if "class GeminiClientPool" in ptxt:
+        ptxt = re.sub(r'class GeminiClientPool\(metaclass=Singleton\):.*?async def _ensure_client_ready', new_pool_code.strip() + "\n\n    async def _ensure_client_ready", ptxt, flags=re.DOTALL)
     pool_file.write_text(ptxt)
 
 # 5. Ensure config/config.yaml exists and does not hold expired dummy credentials
@@ -318,7 +522,7 @@ gemini:
 """)
 else:
     c_txt = cfg_file.read_text()
-    if "YOUR_SECURE" in c_txt or "g.a000CAm643nHGM8cJT" in c_txt:
+    if "YOUR_SECURE" in c_txt or "g.a000" in c_txt or not c_txt.strip():
         import re
         c_txt = re.sub(r'secure_1psid:\s*".*?"', 'secure_1psid: ""', c_txt)
         c_txt = re.sub(r'secure_1psidts:\s*".*?"', 'secure_1psidts: ""', c_txt)
@@ -330,7 +534,12 @@ if cfg_py.exists():
     ctxt = cfg_py.read_text()
     if "host: str = Field(default=\"0.0.0.0\"" in ctxt:
         ctxt = ctxt.replace("host: str = Field(default=\"0.0.0.0\"", "host: str = Field(default=\"127.0.0.1\"")
-        cfg_py.write_text(ctxt)
+    if "secure_1psidcc: str | None = Field" not in ctxt:
+        ctxt = ctxt.replace(
+            "secure_1psidts: str = Field(..., description=\"Gemini Secure 1PSIDTS\")",
+            "secure_1psidts: str = Field(..., description=\"Gemini Secure 1PSIDTS\")\n    secure_1psidcc: str | None = Field(default=None, description=\"Gemini Secure 1PSIDCC\")"
+        )
+    cfg_py.write_text(ctxt)
 ' 2>/dev/null || true
 fi
 
@@ -518,7 +727,30 @@ except Exception:
                 "verify=self.kwargs.get(\"verify\", True),",
                 "verify=self.kwargs.get(\"verify\", True),\n                    curl_options=self.curl_options,"
             )
-            client_file.write_text(txt)
+        if "secure_1psidcc" not in txt:
+            txt = txt.replace(
+                "self._cookies.set(\n                    \"__Secure-1PSIDTS\", secure_1psidts, domain=\".google.com\"\n                )",
+                "self._cookies.set(\n                    \"__Secure-1PSIDTS\", secure_1psidts, domain=\".google.com\"\n                )\n        if secure_1psidcc := kwargs.get(\"secure_1psidcc\"):\n            self._cookies.set(\"__Secure-1PSIDCC\", secure_1psidcc, domain=\".google.com\")"
+            )
+        if "Ignoring non-fatal post-generation code" not in txt:
+            old_err = """                                    case _:
+                                        raise APIError(
+                                            f"Failed to generate contents (stream). Unknown API error code: {error_code}. "
+                                            "This might be a temporary Google service issue."
+                                        )"""
+            new_err = """                                    case _:
+                                        if has_generated_text or error_code in [1096]:
+                                            logger.warning(f"Ignoring non-fatal post-generation code {error_code}")
+                                            break
+                                        raise APIError(
+                                            f"Failed to generate contents (stream). Unknown API error code: {error_code}. "
+                                            "This might be a temporary Google service issue."
+                                        )"""
+            if old_err in txt:
+                txt = txt.replace("nonlocal is_thinking, is_queueing, has_candidates, is_completed, is_final_chunk, cid, rid", "nonlocal is_thinking, is_queueing, has_candidates, is_completed, is_final_chunk, cid, rid, has_generated_text")
+                txt = txt.replace("has_candidates = False", "has_candidates = False\n                    has_generated_text = False")
+                txt = txt.replace(old_err, new_err)
+        client_file.write_text(txt)
 
     # 4. Patch image.py and video.py for file uploads
     for fname in ["image.py", "video.py"]:
@@ -531,6 +763,17 @@ except Exception:
                     "req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
                 )
                 type_file.write_text(txt)
+
+    # 4.5. Patch rotate_1psidts.py to preserve 1PSIDCC, 3PSIDCC and SIDCC in cookie cache
+    rot_file = Path(f"{sp}/gemini_webapi/utils/rotate_1psidts.py")
+    if rot_file.exists():
+        rtxt = rot_file.read_text()
+        if "__Secure-1PSIDCC" not in rtxt:
+            rtxt = rtxt.replace(
+                'is_auth_cookie = cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS"]',
+                'is_auth_cookie = cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PSIDCC", "__Secure-3PSID", "__Secure-3PSIDTS", "__Secure-3PSIDCC", "SIDCC"]'
+            )
+            rot_file.write_text(rtxt)
 
     # 5. Patch curl_cffi/requests/utils.py to guarantee DoH on ALL curl requests
     utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
