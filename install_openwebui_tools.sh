@@ -3,6 +3,10 @@
 if [ -z "$BASH_VERSION" ]; then
     exec /usr/bin/env bash "$0" "$@"
 fi
+# Self-reexec with bash if invoked with sh/dash
+if [ -z "$BASH_VERSION" ]; then
+    exec /usr/bin/env bash "$0" "$@"
+fi
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
