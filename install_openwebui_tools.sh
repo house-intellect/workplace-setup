@@ -956,23 +956,59 @@ browser_specs = [{
     }
 }]
 
-cursor.execute("""
-    INSERT INTO tool (id, user_id, name, content, specs, meta, updated_at, created_at)
-    VALUES ('native_bash_tool', 'system', 'Native Bash Tool', ?, ?, '{}', strftime('%s', 'now'), strftime('%s', 'now'))
-    ON CONFLICT(id) DO UPDATE SET
-        content=excluded.content,
-        specs=excluded.specs,
-        updated_at=strftime('%s', 'now')
-""", (bash_content, json.dumps(bash_specs)))
+# Resolve tool owner: assign to existing admin user if present, otherwise 'system'
+owner_id = 'system'
+try:
+    cursor.execute("SELECT id FROM user WHERE role='admin' ORDER BY created_at ASC LIMIT 1")
+    admin_row = cursor.fetchone()
+    if admin_row:
+        owner_id = admin_row[0]
+except Exception:
+    pass
+
+bash_meta = {
+    "description": "Real Bash terminal execution tool supporting piping, sequencing, redirects, and multiline scripts",
+    "manifest": {
+        "title": "Native Bash Tool",
+        "author": "Local AI Stack",
+        "version": "1.1.0"
+    },
+    "has_user_valves": False
+}
+bash_valves = {}
+
+browser_meta = {
+    "description": "Autonomous semantic browser navigation tool using Puppeteer on port 9222",
+    "manifest": {
+        "title": "Agentic Browser Tool",
+        "author": "Local AI Stack",
+        "version": "1.0.0"
+    },
+    "has_user_valves": False
+}
+browser_valves = {}
 
 cursor.execute("""
-    INSERT INTO tool (id, user_id, name, content, specs, meta, updated_at, created_at)
-    VALUES ('agentic_browser_tool', 'system', 'Agentic Browser Tool', ?, ?, '{}', strftime('%s', 'now'), strftime('%s', 'now'))
+    INSERT INTO tool (id, user_id, name, content, specs, meta, valves, updated_at, created_at)
+    VALUES ('native_bash_tool', ?, 'Native Bash Tool', ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
     ON CONFLICT(id) DO UPDATE SET
         content=excluded.content,
         specs=excluded.specs,
+        meta=excluded.meta,
+        valves=excluded.valves,
         updated_at=strftime('%s', 'now')
-""", (browser_content, json.dumps(browser_specs)))
+""", (owner_id, bash_content, json.dumps(bash_specs), json.dumps(bash_meta), json.dumps(bash_valves)))
+
+cursor.execute("""
+    INSERT INTO tool (id, user_id, name, content, specs, meta, valves, updated_at, created_at)
+    VALUES ('agentic_browser_tool', ?, 'Agentic Browser Tool', ?, ?, ?, ?, strftime('%s', 'now'), strftime('%s', 'now'))
+    ON CONFLICT(id) DO UPDATE SET
+        content=excluded.content,
+        specs=excluded.specs,
+        meta=excluded.meta,
+        valves=excluded.valves,
+        updated_at=strftime('%s', 'now')
+""", (owner_id, browser_content, json.dumps(browser_specs), json.dumps(browser_meta), json.dumps(browser_valves)))
 
 # Configure Open WebUI endpoint and default model to Gemini-FastAPI
 try:
@@ -1063,7 +1099,26 @@ try:
         }
     })
 
+    meta_37_flash = json.dumps({
+        "profile_image_url": "/static/favicon.png",
+        "description": "Gemini 3.7 Flash - Fast multimodal all-around model",
+        "capabilities": {
+            "vision": True, "file_upload": True, "web_search": True,
+            "code_interpreter": True, "terminal": True, "builtin_tools": True
+        }
+    })
+    meta_37_pro = json.dumps({
+        "profile_image_url": "/static/favicon.png",
+        "description": "Gemini 3.7 Pro - Advanced reasoning and coding model",
+        "capabilities": {
+            "vision": True, "file_upload": True, "web_search": True,
+            "code_interpreter": True, "terminal": True, "builtin_tools": True
+        }
+    })
+
     models_to_register = [
+        ("gemini-3.7-flash", "Gemini 3.7 Flash", meta_37_flash),
+        ("gemini-3.7-pro", "Gemini 3.7 Pro", meta_37_pro),
         ("gemini-3.8-flash", "3.8 Flash", meta_flash),
         ("gemini-3.5-flash-lite", "3.5 Flash-Lite", meta_lite),
         ("gemini-3.1-pro", "3.1 Pro", meta_pro),
@@ -1079,13 +1134,13 @@ try:
     for m_id, m_name, m_meta in models_to_register:
         cursor.execute("""
             INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-            VALUES (?, 'system', ?, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
+            VALUES (?, ?, ?, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
                 meta=excluded.meta,
                 is_active=1,
                 updated_at=strftime('%s', 'now')
-        """, (m_id, m_id, m_name, m_meta))
+        """, (m_id, owner_id, m_id, m_name, m_meta))
 
 except Exception as e:
     print(f"Notice: Config / Model table update returned {e}")
