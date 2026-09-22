@@ -32,10 +32,10 @@ In many regions, Google restricts direct access to the Gemini web application (`
 │    └─ Outbound HTTPS Request via curl_cffi             │
 └──────────────────────────┬─────────────────────────────┘
                            │
-                           │ DoH: https://xbox-dns.ru/dns-query
+                           │ DoH: https://dns.comss.one/dns-query
                            ▼
 ┌────────────────────────────────────────────────────────┐
-│ SNI Reverse-Proxy / DoH Gateway (xbox-dns.ru)          │
+│ SNI Reverse-Proxy / DoH Gateway (dns.comss.one)        │
 │   Reroutes gemini.google.com to unblocked edge nodes   │
 └──────────────────────────┬─────────────────────────────┘
                            │
@@ -54,18 +54,21 @@ In many regions, Google restricts direct access to the Gemini web application (`
 
 Rather than tunneling all system traffic through a slow or detectable SOCKS/HTTP proxy, we route only Google hostnames through an SNI-resolving DNS-over-HTTPS (DoH) resolver. 
 
-* **Primary DoH Resolver**: `https://xbox-dns.ru/dns-query` (Fallback: `https://dns.comss.one/dns-query`)
+* **Primary DoH Resolver**: `https://dns.comss.one/dns-query` (Configurable via `$CUSTOM_DOH_URL` / `$GEMINI_DOH_URL`, Fallback: `https://xbox-dns.ru/dns-query`)
 * **How it works**: The DoH server resolves `gemini.google.com` to edge reverse proxies that forward TLS ClientHello SNI headers transparently, bypassing regional IP filtering while maintaining end-to-end TLS security.
 * **Implementation**: We inject `CurlOpt.DOH_URL` into `curl_cffi.requests.AsyncSession` or `BaseSession`:
 
 ```python
+import os
 from curl_cffi import CurlOpt
 from curl_cffi.requests import AsyncSession
+
+doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query")).encode()
 
 # Explicit DoH option in curl_cffi
 session = AsyncSession(
     impersonate="chrome",
-    curl_options={CurlOpt.DOH_URL: b"https://xbox-dns.ru/dns-query"}
+    curl_options={CurlOpt.DOH_URL: doh_url}
 )
 ```
 
@@ -279,7 +282,7 @@ python3 -m venv "$TARGET_DIR/.venv"
 
 ### Stage 3: Auto-Patching `gemini_webapi` & `curl_cffi`
 Run an inline Python patcher in the installer to ensure:
-1. `gemini_webapi/client.py` includes `self.curl_options` and sets `CurlOpt.DOH_URL = b"https://xbox-dns.ru/dns-query"`.
+1. `gemini_webapi/client.py` includes `self.curl_options` and sets `CurlOpt.DOH_URL = b"https://dns.comss.one/dns-query"`.
 2. `gemini_webapi/client.py` recognizes numeric session IDs as `AccountStatus.AVAILABLE`.
 3. `gemini_webapi/client.py` suppresses non-fatal codes 1096 and 1097.
 4. `gemini_webapi/utils/rotate_1psidts.py` retains `__Secure-1PSIDCC`, `__Secure-3PSIDCC`, and `SIDCC` in `is_auth_cookie`.
@@ -300,7 +303,7 @@ Deploy `gemini-fastapi` either as:
 | **"Session is not authenticated or cookies have expired"** | Missing `__Secure-1PSIDCC` or integer session ID in `otAQ7b` RPC. | Use fallback: `1PSIDCC -> 3PSIDCC -> SIDCC`. Apply numeric session ID patch to `_fetch_user_status`. |
 | **"Unknown API error code: 1097" on Turn 2** | `rotate_1psidts.py` dropped `__Secure-1PSIDCC` when saving to `/tmp/gemini_webapi/.cached_cookies_*.json`. | Add `__Secure-1PSIDCC`, `__Secure-3PSIDCC`, `SIDCC` to `is_auth_cookie` in `rotate_1psidts.py`. Remove stale cache with `rm -rf /tmp/gemini_webapi`. |
 | **502 Bad Gateway / Connection Timed Out** | Google dropped auxiliary RPCs (`_send_bard_activity`, `_send_bard_settings`). | Remove auxiliary blocking RPCs from `_init_rpc` in `gemini_webapi/client.py`. |
-| **"User location is not supported"** | Requests are reaching Google via the local direct ISP IP without DoH SNI rerouting. | Verify `curl_options={CurlOpt.DOH_URL: b"https://xbox-dns.ru/dns-query"}` is active on all outbound curl sessions. |
+| **"User location is not supported"** | Requests are reaching Google via the local direct ISP IP without DoH SNI rerouting. | Verify `curl_options={CurlOpt.DOH_URL: b"https://dns.comss.one/dns-query"}` is active on all outbound curl sessions. |
 | **`sqlite3.OperationalError: database is locked`** | Firefox is actively running and holding an exclusive SQLite lock on `cookies.sqlite`. | Use `rookiepy.firefox()` (which safely copies SQLite to memory/tmp before reading) rather than opening `cookies.sqlite` directly with raw sqlite3. |
 
 ---
@@ -324,7 +327,7 @@ async def test():
         secure_1psid=cd['__Secure-1PSID'],
         secure_1psidts=cd['__Secure-1PSIDTS'],
         secure_1psidcc=psidcc,
-        curl_options={CurlOpt.DOH_URL: b'https://xbox-dns.ru/dns-query'}
+        curl_options={CurlOpt.DOH_URL: b'https://dns.comss.one/dns-query'}
     )
     await client.init(timeout=30, auto_refresh=False)
     chat = client.start_chat()

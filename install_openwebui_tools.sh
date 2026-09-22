@@ -12,6 +12,11 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${1:-$SCRIPT_DIR/open-webui}"
 
+# Configurable DNS-over-HTTPS (DoH) resolver for SNI routing around geoblocks
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+export CUSTOM_DOH_URL
+export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
+
 echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 
 # 1. Deploy agentic-browser and quizmaster skills to home directory
@@ -138,7 +143,7 @@ else
     "$PY_CMD" -m venv "$VENV_DIR"
 fi
 
-# 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (xbox-dns.ru) are Present
+# 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.comss.one) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
 if [ ! -d "$FASTAPI_DIR" ]; then
     if [ -d "$HOME/local-ai-stack/gemini-fastapi" ]; then
@@ -166,6 +171,7 @@ if fastapi_dir.exists():
             doh_code = """try:
     from curl_cffi import CurlOpt
     from curl_cffi.requests.session import BaseSession
+    import os
 
     _orig_base_init = BaseSession.__init__
 
@@ -175,7 +181,10 @@ if fastapi_dir.exists():
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+            if isinstance(doh_endpoint, str):
+                doh_endpoint = doh_endpoint.encode()
+            curl_opts[CurlOpt.DOH_URL] = doh_endpoint
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init
@@ -184,6 +193,9 @@ except Exception:
 
 """
             app_init.write_text(doh_code + atxt)
+        elif "xbox-dns.ru" in atxt:
+            atxt = atxt.replace("https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query")
+            app_init.write_text(atxt)
 
     # 1.2 Patch app/services/client.py (GeminiClientWrapper curl_options & AccountStatus check)
     wrap_file = fastapi_dir / "app" / "services" / "client.py"
@@ -197,7 +209,7 @@ except Exception:
         super().__init__(**kwargs)
         self.id = client_id
         import os
-        doh_endpoint = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
         if isinstance(doh_endpoint, str):
             doh_endpoint = doh_endpoint.encode()
         if secure_1psidcc := kwargs.get("secure_1psidcc"):
@@ -295,7 +307,7 @@ except Exception:
                 """try:
             from curl_cffi import CurlOpt
             import os
-            _doh = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
             if isinstance(_doh, str):
                 _doh = _doh.encode()
             h_opts = {CurlOpt.DOH_URL: _doh}
@@ -303,6 +315,9 @@ except Exception:
             h_opts = {}
         async with AsyncSession(impersonate="chrome", curl_options=h_opts) as client:"""
             )
+            helper_file.write_text(htxt)
+        elif "xbox-dns.ru" in htxt:
+            htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query")
             helper_file.write_text(htxt)
 
     # 1.4 Patch app/services/pool.py (Rookiepy multi-browser extraction, prioritize Firefox, DoH)
@@ -391,7 +406,7 @@ except Exception:
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -441,7 +456,7 @@ except Exception:
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("GEMINI_DOH_URL", "https://xbox-dns.ru/dns-query")
+                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
                 if isinstance(doh_url, str):
                     doh_url = doh_url.encode()
                 # Prioritize Firefox first
@@ -578,11 +593,36 @@ search_roots = [
     "'"$HOME"'/local-ai-stack/tool-calling-test/.venv",
     "'"$HOME"'/local-ai-stack/open-webui/.venv"
 ]
+sp_dirs = set()
 for root in search_roots:
     for sp in glob.glob(f"{root}/lib/python*/site-packages"):
-        # StrEnum compatibility
-        for f in glob.glob(f"{sp}/gemini_webapi/**/*.py", recursive=True):
-            p = Path(f)
+        if os.path.isdir(sp):
+            sp_dirs.add(sp)
+import sys, site
+for p in sys.path + site.getsitepackages():
+    if "site-packages" in p and os.path.isdir(p):
+        sp_dirs.add(p)
+for p in Path(sys.prefix).glob("lib/python*/site-packages"):
+    if p.is_dir():
+        sp_dirs.add(str(p))
+for p in [
+    os.path.expanduser("~/local-ai-stack/tool-calling-test/.venv/lib/python3.10/site-packages"),
+    os.path.expanduser("~/local-ai-stack/tool-calling-test/.venv/lib/python3.11/site-packages"),
+    os.path.expanduser("~/local-ai-stack/tool-calling-test/.venv/lib/python3.12/site-packages"),
+    os.path.expanduser("~/local-ai-stack/open-webui/.venv/lib/python3.10/site-packages"),
+    os.path.expanduser("~/local-ai-stack/open-webui/.venv/lib/python3.11/site-packages"),
+    os.path.expanduser("~/local-ai-stack/open-webui/.venv/lib/python3.12/site-packages"),
+]:
+    if os.path.isdir(p):
+        sp_dirs.add(p)
+
+doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+
+for sp in sorted(sp_dirs):
+    # StrEnum compatibility
+    for f in glob.glob(f"{sp}/gemini_webapi/**/*.py", recursive=True):
+        p = Path(f)
+        if p.exists():
             txt = p.read_text()
             if "from enum import Enum, IntEnum, StrEnum" in txt:
                 txt = txt.replace(
@@ -590,33 +630,37 @@ for root in search_roots:
                     "from enum import Enum, IntEnum\ntry:\n    from enum import StrEnum\nexcept ImportError:\n    class StrEnum(str, Enum):\n        pass"
                 )
                 p.write_text(txt)
-        # Patch open_webui to bind strictly to localhost (127.0.0.1) instead of 0.0.0.0
-        for webui_init in [Path(sp) / "open_webui" / "__init__.py"]:
-            if webui_init.exists():
-                wtxt = webui_init.read_text()
-                if "host: str = '0.0.0.0'" in wtxt:
-                    wtxt = wtxt.replace("host: str = '0.0.0.0'", "host: str = '127.0.0.1'")
-                    webui_init.write_text(wtxt)
 
-        # Patch get_access_token.py
-        # Patch gemini_webapi/__init__.py for global BaseSession DoH
-        init_file = Path(f"{sp}/gemini_webapi/__init__.py")
-        if init_file.exists():
-            txt = init_file.read_text()
-            if "CurlOpt.DOH_URL" not in txt:
-                doh_code = """try:
+    # Patch open_webui to bind strictly to localhost (127.0.0.1) instead of 0.0.0.0
+    for webui_init in [Path(sp) / "open_webui" / "__init__.py"]:
+        if webui_init.exists():
+            wtxt = webui_init.read_text()
+            if "host: str = '0.0.0.0'" in wtxt:
+                wtxt = wtxt.replace("host: str = '0.0.0.0'", "host: str = '127.0.0.1'")
+                webui_init.write_text(wtxt)
+
+    # Patch gemini_webapi/__init__.py for global BaseSession DoH
+    init_file = Path(f"{sp}/gemini_webapi/__init__.py")
+    if init_file.exists():
+        txt = init_file.read_text()
+        if "CurlOpt.DOH_URL" not in txt:
+            doh_code = f"""try:
     from curl_cffi import CurlOpt
     from curl_cffi.requests.session import BaseSession
+    import os
 
     _orig_base_init = BaseSession.__init__
 
     def _doh_base_init(self, *args, **kwargs):
         curl_opts = kwargs.get("curl_options")
         if curl_opts is None:
-            curl_opts = {}
+            curl_opts = {{}}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            curl_opts[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+            doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "{doh_url_str}"))
+            if isinstance(doh_url, str):
+                doh_url = doh_url.encode()
+            curl_opts[CurlOpt.DOH_URL] = doh_url
         _orig_base_init(self, *args, **kwargs)
 
     BaseSession.__init__ = _doh_base_init
@@ -624,47 +668,55 @@ except Exception:
     pass
 
 """
-                init_file.write_text(doh_code + txt)
+            init_file.write_text(doh_code + txt)
+        elif "xbox-dns.ru" in txt:
+            txt = txt.replace("https://xbox-dns.ru/dns-query", doh_url_str)
+            init_file.write_text(txt)
 
-        gat_file = Path(f"{sp}/gemini_webapi/utils/get_access_token.py")
-        if gat_file.exists():
-            txt = gat_file.read_text()
-            if "curl_options: dict | None = None" not in txt:
-                txt = txt.replace(
-                    "verify: bool = True,",
-                    "verify: bool = True,\n    curl_options: dict | None = None,"
-                )
-                txt = txt.replace(
-                    "client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n    )",
-                    "try:\n        from curl_cffi import CurlOpt\n        if curl_options is None:\n            curl_options = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n    except Exception:\n        pass\n    client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=curl_options\n    )"
-                )
-                gat_file.write_text(txt)
+    gat_file = Path(f"{sp}/gemini_webapi/utils/get_access_token.py")
+    if gat_file.exists():
+        txt = gat_file.read_text()
+        if "curl_options: dict | None = None" not in txt:
+            txt = txt.replace(
+                "verify: bool = True,",
+                "verify: bool = True,\n    curl_options: dict | None = None,"
+            )
+            txt = txt.replace(
+                "client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n    )",
+                f"try:\n        from curl_cffi import CurlOpt\n        if curl_options is None:\n            curl_options = {{CurlOpt.DOH_URL: b\"{doh_url_str}\"}}\n    except Exception:\n        pass\n    client = AsyncSession(\n        impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=curl_options\n    )"
+            )
+            gat_file.write_text(txt)
+        elif "xbox-dns.ru" in txt:
+            txt = txt.replace("https://xbox-dns.ru/dns-query", doh_url_str)
+            gat_file.write_text(txt)
 
-        # Patch client.py
-        client_file = Path(f"{sp}/gemini_webapi/client.py")
-        if client_file.exists():
-            txt = client_file.read_text()
-            if "self.curl_options" not in txt:
-                txt = txt.replace(
-                    "self.kwargs = kwargs",
-                    "self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass"
-                )
-                txt = txt.replace(
-                    "verify=self.kwargs.get(\"verify\", True),",
-                    "verify=self.kwargs.get(\"verify\", True),\n                    curl_options=self.curl_options,"
-                )
-            if "secure_1psidcc" not in txt:
-                txt = txt.replace(
-                    "self._cookies.set(\n                    \"__Secure-1PSIDTS\", secure_1psidts, domain=\".google.com\"\n                )",
-                    "self._cookies.set(\n                    \"__Secure-1PSIDTS\", secure_1psidts, domain=\".google.com\"\n                )\n        if secure_1psidcc := kwargs.get(\"secure_1psidcc\"):\n            self._cookies.set(\"__Secure-1PSIDCC\", secure_1psidcc, domain=\".google.com\")"
-                )
-            if "Ignoring non-fatal post-generation code" not in txt:
-                old_err = """                                    case _:
+    # Patch client.py
+    client_file = Path(f"{sp}/gemini_webapi/client.py")
+    if client_file.exists():
+        txt = client_file.read_text()
+        if "self.curl_options" not in txt:
+            txt = txt.replace(
+                "self.kwargs = kwargs",
+                f"self.kwargs = kwargs\n        self.curl_options = kwargs.get(\"curl_options\")\n        if self.curl_options is None:\n            try:\n                from curl_cffi import CurlOpt\n                self.curl_options = {{CurlOpt.DOH_URL: b\"{doh_url_str}\"}}\n            except Exception:\n                pass"
+            )
+            txt = txt.replace(
+                "verify=self.kwargs.get(\"verify\", True),",
+                "verify=self.kwargs.get(\"verify\", True),\n                    curl_options=self.curl_options,"
+            )
+        elif "xbox-dns.ru" in txt:
+            txt = txt.replace("https://xbox-dns.ru/dns-query", doh_url_str)
+        if "secure_1psidcc" not in txt:
+            txt = txt.replace(
+                "self._cookies.set(\n                    \"__Secure-1PSIDTS\", secure_1psidts, domain=\".google.com\"\n                )",
+                "self._cookies.set(\n                    \"__Secure-1PSIDTS\", secure_1psidts, domain=\".google.com\"\n                )\n        if secure_1psidcc := kwargs.get(\"secure_1psidcc\"):\n            self._cookies.set(\"__Secure-1PSIDCC\", secure_1psidcc, domain=\".google.com\")"
+            )
+        if "Ignoring non-fatal post-generation code" not in txt:
+            old_err = """                                    case _:
                                         raise APIError(
                                             f"Failed to generate contents (stream). Unknown API error code: {error_code}. "
                                             "This might be a temporary Google service issue."
                                         )"""
-                new_err = """                                    case _:
+            new_err = """                                    case _:
                                         if has_generated_text or error_code in [1096]:
                                             logger.warning(f"Ignoring non-fatal post-generation code {error_code}")
                                             break
@@ -672,52 +724,58 @@ except Exception:
                                             f"Failed to generate contents (stream). Unknown API error code: {error_code}. "
                                             "This might be a temporary Google service issue."
                                         )"""
-                if old_err in txt:
-                    txt = txt.replace("nonlocal is_thinking, is_queueing, has_candidates, is_completed, is_final_chunk, cid, rid", "nonlocal is_thinking, is_queueing, has_candidates, is_completed, is_final_chunk, cid, rid, has_generated_text")
-                    txt = txt.replace("has_candidates = False", "has_candidates = False\n                    has_generated_text = False")
-                    txt = txt.replace(old_err, new_err)
-            client_file.write_text(txt)
+            if old_err in txt:
+                txt = txt.replace("nonlocal is_thinking, is_queueing, has_candidates, is_completed, is_final_chunk, cid, rid", "nonlocal is_thinking, is_queueing, has_candidates, is_completed, is_final_chunk, cid, rid, has_generated_text")
+                txt = txt.replace("has_candidates = False", "has_candidates = False\n                    has_generated_text = False")
+                txt = txt.replace(old_err, new_err)
+        client_file.write_text(txt)
 
-        # Patch image.py and video.py
-        for fname in ["image.py", "video.py"]:
-            type_file = Path(f"{sp}/gemini_webapi/types/{fname}")
-            if type_file.exists():
-                txt = type_file.read_text()
-                if "req_curl_opts" not in txt:
-                    txt = txt.replace(
-                        "req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n        )",
-                        "req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {CurlOpt.DOH_URL: b\"https://xbox-dns.ru/dns-query\"}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
-                    )
-                    type_file.write_text(txt)
-
-        # Patch rotate_1psidts.py to preserve 1PSIDCC, 3PSIDCC and SIDCC in cookie cache
-        rot_file = Path(f"{sp}/gemini_webapi/utils/rotate_1psidts.py")
-        if rot_file.exists():
-            rtxt = rot_file.read_text()
-            if "__Secure-1PSIDCC" not in rtxt:
-                rtxt = rtxt.replace(
-                    'is_auth_cookie = cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS"]',
-                    'is_auth_cookie = cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PSIDCC", "__Secure-3PSID", "__Secure-3PSIDTS", "__Secure-3PSIDCC", "SIDCC"]'
+    # Patch image.py and video.py
+    for fname in ["image.py", "video.py"]:
+        type_file = Path(f"{sp}/gemini_webapi/types/{fname}")
+        if type_file.exists():
+            txt = type_file.read_text()
+            if "req_curl_opts" not in txt:
+                txt = txt.replace(
+                    "req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify\n        )",
+                    f"req_curl_opts = getattr(self.client, \"curl_options\", None)\n        if req_curl_opts is None:\n            try:\n                from curl_cffi import CurlOpt\n                req_curl_opts = {{CurlOpt.DOH_URL: b\"{doh_url_str}\"}}\n            except Exception:\n                pass\n        req_client = AsyncSession(\n            impersonate=\"chrome\", proxy=proxy, allow_redirects=True, verify=verify, curl_options=req_curl_opts\n        )"
                 )
-                rot_file.write_text(rtxt)
+                type_file.write_text(txt)
+            elif "xbox-dns.ru" in txt:
+                txt = txt.replace("https://xbox-dns.ru/dns-query", doh_url_str)
+                type_file.write_text(txt)
 
-        # Patch curl_cffi/requests/utils.py to guarantee DoH on ALL curl requests
-        utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
-        if utils_file.exists():
-            utxt = utils_file.read_text()
-            if "https://xbox-dns.ru/dns-query" not in utxt and "if curl_options:" in utxt:
-                utxt = utxt.replace(
-                    "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
-                    """    if curl_options is None:
-        curl_options = {}
+    # Patch rotate_1psidts.py to preserve 1PSIDCC, 3PSIDCC and SIDCC in cookie cache
+    rot_file = Path(f"{sp}/gemini_webapi/utils/rotate_1psidts.py")
+    if rot_file.exists():
+        rtxt = rot_file.read_text()
+        if "__Secure-1PSIDCC" not in rtxt:
+            rtxt = rtxt.replace(
+                'is_auth_cookie = cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS"]',
+                'is_auth_cookie = cookie.name in ["__Secure-1PSID", "__Secure-1PSIDTS", "__Secure-1PSIDCC", "__Secure-3PSID", "__Secure-3PSIDTS", "__Secure-3PSIDCC", "SIDCC"]'
+            )
+            rot_file.write_text(rtxt)
+
+    # Patch curl_cffi/requests/utils.py to guarantee DoH on ALL curl requests
+    utils_file = Path(f"{sp}/curl_cffi/requests/utils.py")
+    if utils_file.exists():
+        utxt = utils_file.read_text()
+        if doh_url_str not in utxt and "if curl_options:" in utxt:
+            utxt = utxt.replace(
+                "    if curl_options:\n        for option, setting in curl_options.items():\n            c.setopt(option, setting)",
+                f"""    if curl_options is None:
+        curl_options = {{}}
     else:
         curl_options = dict(curl_options)
     if CurlOpt.DOH_URL not in curl_options:
-        curl_options[CurlOpt.DOH_URL] = b"https://xbox-dns.ru/dns-query"
+        curl_options[CurlOpt.DOH_URL] = b"{doh_url_str}"
     for option, setting in curl_options.items():
         c.setopt(option, setting)"""
-                )
-                utils_file.write_text(utxt)
+            )
+            utils_file.write_text(utxt)
+        elif "xbox-dns.ru" in utxt:
+            utxt = utxt.replace("https://xbox-dns.ru/dns-query", doh_url_str)
+            utils_file.write_text(utxt)
 ' 2>/dev/null || true
 
 # 4. Detect All Open WebUI webui.db Databases
