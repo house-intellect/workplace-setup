@@ -13,7 +13,7 @@ echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash)
 
 # 1. System Dependency Checks
 echo "[1/4] Checking system dependencies..."
-for cmd in nc curl; do
+for cmd in curl; do
     if ! command -v "$cmd" &>/dev/null; then
         echo "Error: Required command '$cmd' is not installed or not in PATH."
         exit 1
@@ -812,6 +812,7 @@ if [ ! -d "$SKILL_DIR/node_modules" ]; then
 fi
 
 # 4. Generate Runner and Launcher
+# Auto-purge desynchronized cookie caches to prevent Error 1097rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
 echo "[4/4] Generating agent runner and ~/agent.sh..."
 
 cat << 'PY_EOF' > "$SMOL_DIR/smolagent.py"

@@ -8,6 +8,7 @@ echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 
 # 1. Deploy agentic-browser and quizmaster skills to home directory
 echo "[1/4] Deploying agentic-browser and quizmaster skills..."
+rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
 mkdir -p "$HOME/.agents/skills/agentic-browser"
 if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
     cp -r "$SCRIPT_DIR/agentic-browser/"* "$HOME/.agents/skills/agentic-browser/"
