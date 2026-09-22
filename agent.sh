@@ -8,6 +8,7 @@ PROMPT_TEXT=""
 FILE_ARG=""
 IMAGE_ARG=""
 MODEL_ARG=""
+THINKING_ARG=0
 LIST_MODELS=0
 
 while [ $# -gt 0 ]; do
@@ -24,6 +25,10 @@ while [ $# -gt 0 ]; do
             MODEL_ARG="$2"
             shift 2
             ;;
+        -t|--thinking)
+            THINKING_ARG=1
+            shift
+            ;;
         -l|--list-models)
             LIST_MODELS=1
             shift
@@ -39,6 +44,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ $THINKING_ARG -eq 1 ] && [ -z "$MODEL_ARG" ]; then
+    MODEL_ARG="thinking"
+fi
+
 if [ $LIST_MODELS -eq 0 ]; then
     if [ -z "$PROMPT_TEXT" ] && [ ! -t 0 ]; then
         PROMPT_TEXT=$(cat)
@@ -46,7 +55,8 @@ if [ $LIST_MODELS -eq 0 ]; then
 
     if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
         echo "Error: No prompt, text file, or image provided."
-        echo "Usage: $0 [-m model] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+        echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+        echo "Use '$0 -t' to run with a thinking model and display the thought process."
         echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
         exit 1
     fi

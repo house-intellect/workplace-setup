@@ -898,7 +898,56 @@ import glob
 import json
 import argparse
 import subprocess
-from smolagents import ToolCallingAgent, OpenAIServerModel, tool
+from smolagents import ToolCallingAgent, OpenAIServerModel, tool, ChatMessage
+from rich.console import Console
+from rich.panel import Panel
+from rich.markdown import Markdown
+
+class ThinkingOpenAIServerModel(OpenAIServerModel):
+    """
+    Subclass of OpenAIServerModel that preserves and displays Gemini reasoning_content
+    (thinking process) before tool execution or final answer generation.
+    """
+    def generate(
+        self,
+        messages,
+        stop_sequences=None,
+        response_format=None,
+        tools_to_call_from=None,
+        **kwargs,
+    ) -> ChatMessage:
+        chat_message = super().generate(
+            messages=messages,
+            stop_sequences=stop_sequences,
+            response_format=response_format,
+            tools_to_call_from=tools_to_call_from,
+            **kwargs,
+        )
+        raw = getattr(chat_message, "raw", None)
+        if raw and getattr(raw, "choices", None) and len(raw.choices) > 0:
+            msg = raw.choices[0].message
+            thoughts = getattr(msg, "reasoning_content", None)
+            if not thoughts and hasattr(msg, "model_extra") and msg.model_extra:
+                thoughts = msg.model_extra.get("reasoning_content")
+
+            if thoughts and str(thoughts).strip():
+                console = Console()
+                console.print()
+                console.print(
+                    Panel(
+                        Markdown(str(thoughts).strip()),
+                        title="[bold cyan]🧠 Thinking Process[/bold cyan]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                    )
+                )
+                console.print()
+
+        if chat_message.tool_calls and chat_message.content and str(chat_message.content).strip():
+            console = Console()
+            console.print(f"[bold yellow]Assistant:[/bold yellow] {str(chat_message.content).strip()}")
+
+        return chat_message
 
 @tool
 def execute_bash(command: str) -> str:
@@ -1169,6 +1218,7 @@ def get_available_models(api_base="http://127.0.0.1:8000/v1"):
 def main():
     parser = argparse.ArgumentParser(description="Smolagent Runner")
     parser.add_argument("-m", "--model", help="Model name (or alias, e.g. flash, thinking, pro, 3.8-flash, 3.1-pro)", default=None)
+    parser.add_argument("-t", "--thinking", action="store_true", help="Force selection of a thinking model (e.g. thinking / gemini-extended-thinking)")
     parser.add_argument("-f", "--file", help="Input text file path", default=None)
     parser.add_argument("-i", "--image", help="Input image path or folder", default=None)
     parser.add_argument("-l", "--list-models", action="store_true", help="List available models from running FastAPI server")
@@ -1203,11 +1253,15 @@ def main():
 
     # Dynamic model resolution from FastAPI
     chosen_model = args.model or os.environ.get("MODEL")
-    if not chosen_model:
+    if args.thinking and not chosen_model:
+        chosen_model = "thinking"
+    elif not chosen_model:
         avail = get_available_models(api_base)
         chosen_model = avail[0] if avail else "gemini-3-flash"
+    elif args.thinking and chosen_model not in ["thinking", "gemini-extended-thinking", "gemini-3-flash-thinking"]:
+        chosen_model = "thinking"
 
-    model = OpenAIServerModel(
+    model = ThinkingOpenAIServerModel(
         model_id=chosen_model,
         api_base=api_base,
         api_key=auth_token or "not-needed"
@@ -1237,6 +1291,7 @@ PROMPT_TEXT=""
 FILE_ARG=""
 IMAGE_ARG=""
 MODEL_ARG=""
+THINKING_ARG=0
 LIST_MODELS=0
 
 while [ $# -gt 0 ]; do
@@ -1253,6 +1308,10 @@ while [ $# -gt 0 ]; do
             MODEL_ARG="$2"
             shift 2
             ;;
+        -t|--thinking)
+            THINKING_ARG=1
+            shift
+            ;;
         -l|--list-models)
             LIST_MODELS=1
             shift
@@ -1268,6 +1327,10 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+if [ $THINKING_ARG -eq 1 ] && [ -z "$MODEL_ARG" ]; then
+    MODEL_ARG="thinking"
+fi
+
 if [ $LIST_MODELS -eq 0 ]; then
     if [ -z "$PROMPT_TEXT" ] && [ ! -t 0 ]; then
         PROMPT_TEXT=$(cat)
@@ -1275,7 +1338,8 @@ if [ $LIST_MODELS -eq 0 ]; then
 
     if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
         echo "Error: No prompt, text file, or image provided."
-        echo "Usage: $0 [-m model] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+        echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+        echo "Use '$0 -t' to run with a thinking model and display the thought process."
         echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
         exit 1
     fi
