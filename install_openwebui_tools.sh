@@ -16,15 +16,86 @@ export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 
 stop_running_stack() {
-    echo "Stopping any currently running AI stack processes (gemini-fastapi, open-webui)..."
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user stop open-webui.service gemini-fastapi.service 2>/dev/null || true
+    local ports=(8000 8080)
+    local found_occupying=0
+    local announced_pids=""
+
+    echo "Checking required stack ports (8000, 8080) and running instances..."
+
+    # 1. Check processes holding required ports
+    for port in "${ports[@]}"; do
+        local pids=""
+        if command -v lsof >/dev/null 2>&1; then
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+        fi
+        if [ -z "$pids" ] && command -v fuser >/dev/null 2>&1; then
+            pids=$(fuser "${port}/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -v '^$' || true)
+        fi
+
+        if [ -n "$pids" ]; then
+            for pid in $pids; do
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                    local cmd=""
+                    if [ -r "/proc/$pid/cmdline" ]; then
+                        cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
+                    fi
+                    [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
+                    echo "⚠️  Found process occupying required port $port: PID $pid ($cmd)"
+                    echo "   -> Terminating PID $pid to allow bundle services to bind to port $port..."
+                    found_occupying=1
+                    announced_pids="$announced_pids $pid"
+                fi
+            done
+        fi
+    done
+
+    # 2. Check known stack processes by pattern
+    local pattern_pids
+    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui serve" 2>/dev/null || true)
+    if [ -n "$pattern_pids" ]; then
+        for pid in $pattern_pids; do
+            case " $announced_pids " in
+                *" $pid "*) ;; # already announced
+                *)
+                    if kill -0 "$pid" 2>/dev/null; then
+                        local cmd=""
+                        if [ -r "/proc/$pid/cmdline" ]; then
+                            cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | head -c 80 || true)
+                        fi
+                        [ -z "$cmd" ] && cmd=$(ps -p "$pid" -o comm= 2>/dev/null || echo "process")
+                        echo "⚠️  Found active previous stack instance: PID $pid ($cmd)"
+                        echo "   -> Terminating PID $pid to prevent version collisions..."
+                        found_occupying=1
+                        announced_pids="$announced_pids $pid"
+                    fi
+                    ;;
+            esac
+        done
     fi
+
+    # 3. Stop systemd services if present
+    if command -v systemctl >/dev/null 2>&1; then
+        for srv in open-webui.service gemini-fastapi.service; do
+            if systemctl --user is-active "$srv" >/dev/null 2>&1; then
+                echo "⚠️  Found active systemd user service: $srv"
+                echo "   -> Stopping $srv so bundle services can manage ports 8000 and 8080..."
+                systemctl --user stop "$srv" 2>/dev/null || true
+                found_occupying=1
+            fi
+        done
+    fi
+
+    if [ "$found_occupying" -eq 0 ]; then
+        echo "✓ Required ports (8000, 8080) are free. No conflicting processes detected."
+        return 0
+    fi
+
+    # 4. Terminate with SIGTERM
     pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
     pkill -TERM -f "open-webui serve" 2>/dev/null || true
     pkill -TERM -f "open_webui" 2>/dev/null || true
 
-    for port in 8000 8080; do
+    for port in "${ports[@]}"; do
         if command -v fuser >/dev/null 2>&1; then
             fuser -k -TERM "${port}/tcp" >/dev/null 2>&1 || true
         fi
@@ -37,27 +108,18 @@ stop_running_stack() {
         fi
     done
 
-    local waited=0
-    while [ $waited -lt 3 ]; do
-        local found=0
+    local wait_count=0
+    while [ $wait_count -lt 5 ]; do
         if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
-            found=1
-        fi
-        for port in 8000 8080; do
-            if command -v lsof >/dev/null 2>&1; then
-                if [ -n "$(lsof -ti:${port} 2>/dev/null || true)" ]; then
-                    found=1
-                fi
-            fi
-        done
-        if [ $found -eq 0 ]; then
+            sleep 1
+            wait_count=$((wait_count + 1))
+        else
             break
         fi
-        sleep 1
-        waited=$((waited + 1))
     done
 
-    for port in 8000 8080; do
+    # 5. Force kill fallback with SIGKILL if still holding ports or running
+    for port in "${ports[@]}"; do
         if command -v fuser >/dev/null 2>&1; then
             fuser -k -KILL "${port}/tcp" >/dev/null 2>&1 || true
         fi
@@ -71,8 +133,9 @@ stop_running_stack() {
     done
     pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
     pkill -9 -f "open-webui serve" 2>/dev/null || true
+    pkill -9 -f "open_webui" 2>/dev/null || true
     rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
-    echo "Running stack processes stopped successfully."
+    echo "✓ Conflicting processes terminated. Ports 8000 and 8080 are now free."
 }
 
 # Stop any previous versions before proceeding with setup/update
