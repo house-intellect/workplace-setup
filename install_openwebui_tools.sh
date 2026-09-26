@@ -249,7 +249,7 @@ check_python_version() {
 }
 
 PY_CMD=""
-for p in python3.12 python3.11 python3; do
+for p in python3.12 python3.11 python3.10 python3; do
     if command -v "$p" >/dev/null 2>&1 && check_python_version "$(command -v "$p")"; then
         PY_CMD="$(command -v "$p")"
         break

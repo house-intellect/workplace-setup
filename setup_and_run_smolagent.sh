@@ -178,13 +178,18 @@ check_python_version() {
     return 1 # Fail
 }
 
-if command -v python3 >/dev/null 2>&1 && check_python_version "$(command -v python3)"; then
-    BASE_PYTHON="$(command -v python3)"
-    echo "Found system Python >= 3.10: $BASE_PYTHON"
-elif [ -x "$HOME/miniconda3/bin/python3" ] && check_python_version "$HOME/miniconda3/bin/python3"; then
+for p in python3.12 python3.11 python3.10 python3; do
+    if command -v "$p" >/dev/null 2>&1 && check_python_version "$(command -v "$p")"; then
+        BASE_PYTHON="$(command -v "$p")"
+        echo "Found system Python >= 3.10: $BASE_PYTHON"
+        break
+    fi
+done
+
+if [ -z "$BASE_PYTHON" ] && [ -x "$HOME/miniconda3/bin/python3" ] && check_python_version "$HOME/miniconda3/bin/python3"; then
     BASE_PYTHON="$HOME/miniconda3/bin/python3"
     echo "Found local Miniconda Python >= 3.10: $BASE_PYTHON"
-else
+elif [ -z "$BASE_PYTHON" ]; then
     echo "Python 3.10+ not found in system. Installing local Miniconda (compatible with older GLIBC, no root required)..."
     rm -rf "$HOME/miniconda3"
     rm -f miniconda.sh
