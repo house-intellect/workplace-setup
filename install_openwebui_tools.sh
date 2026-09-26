@@ -18,7 +18,7 @@ echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 stop_running_stack() {
     echo "Stopping any currently running AI stack processes (gemini-fastapi, open-webui)..."
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl --user stop open-webui.service 2>/dev/null || true
+        systemctl --user stop open-webui.service gemini-fastapi.service 2>/dev/null || true
     fi
     pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
     pkill -TERM -f "open-webui serve" 2>/dev/null || true
