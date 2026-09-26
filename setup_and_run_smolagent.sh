@@ -3,10 +3,6 @@
 if [ -z "$BASH_VERSION" ]; then
     exec /usr/bin/env bash "$0" "$@"
 fi
-# Self-reexec with bash if invoked with sh/dash
-if [ -z "$BASH_VERSION" ]; then
-    exec /usr/bin/env bash "$0" "$@"
-fi
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,11 +14,74 @@ REAL_HOME="$HOME"
 SKILL_DIR="$HOME/.agents/skills/agentic-browser"
 
 # Configurable DNS-over-HTTPS (DoH) resolver for SNI routing around geoblocks
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://xbox-dns.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
 echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash) ==="
+
+stop_running_stack() {
+    echo "Stopping any currently running AI stack processes (gemini-fastapi, open-webui)..."
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user stop open-webui.service 2>/dev/null || true
+    fi
+    pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    pkill -TERM -f "open-webui serve" 2>/dev/null || true
+    pkill -TERM -f "open_webui" 2>/dev/null || true
+
+    for port in 8000 8080; do
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -TERM "${port}/tcp" >/dev/null 2>&1 || true
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            local pids
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+            if [ -n "$pids" ]; then
+                kill -TERM $pids >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+
+    local waited=0
+    while [ $waited -lt 3 ]; do
+        local found=0
+        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+            found=1
+        fi
+        for port in 8000 8080; do
+            if command -v lsof >/dev/null 2>&1; then
+                if [ -n "$(lsof -ti:${port} 2>/dev/null || true)" ]; then
+                    found=1
+                fi
+            fi
+        done
+        if [ $found -eq 0 ]; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    for port in 8000 8080; do
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -KILL "${port}/tcp" >/dev/null 2>&1 || true
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            local pids
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+            if [ -n "$pids" ]; then
+                kill -9 $pids >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+    pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    pkill -9 -f "open-webui serve" 2>/dev/null || true
+    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
+    echo "Running stack processes stopped successfully."
+}
+
+# Stop any previous versions before proceeding with setup/update
+stop_running_stack
 
 # 1. System Dependency Checks
 echo "[1/4] Checking system dependencies..."
@@ -112,20 +171,20 @@ fi
 
 # 3. Check/Install Gemini-FastAPI Server
 echo "[3/4] Setting up Gemini-FastAPI server..."
-if [ ! -f "$FASTAPI_DIR/run.py" ]; then
-    if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ]; then
-        echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Deploying..."
-        mkdir -p "$FASTAPI_DIR"
-        cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
-    elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ]; then
-        echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Deploying..."
-        mkdir -p "$FASTAPI_DIR"
-        cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
-    elif [ -f "$SCRIPT_DIR/run.py" ] && [ -d "$SCRIPT_DIR/app" ]; then
-        echo "Running directly inside Gemini-FastAPI folder. Deploying to $FASTAPI_DIR..."
-        mkdir -p "$FASTAPI_DIR"
-        cp -r "$SCRIPT_DIR/"* "$FASTAPI_DIR/"
-    elif command -v git >/dev/null 2>&1; then
+if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ]; then
+    echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Syncing/updating to $FASTAPI_DIR..."
+    mkdir -p "$FASTAPI_DIR"
+    cp -ru "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
+elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ]; then
+    echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Syncing/updating to $FASTAPI_DIR..."
+    mkdir -p "$FASTAPI_DIR"
+    cp -ru "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
+elif [ -f "$SCRIPT_DIR/run.py" ] && [ -d "$SCRIPT_DIR/app" ]; then
+    echo "Running directly inside Gemini-FastAPI folder. Deploying to $FASTAPI_DIR..."
+    mkdir -p "$FASTAPI_DIR"
+    cp -ru "$SCRIPT_DIR/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/"* "$FASTAPI_DIR/"
+elif [ ! -f "$FASTAPI_DIR/run.py" ]; then
+    if command -v git >/dev/null 2>&1; then
         echo "Cloning Gemini-FastAPI from GitHub..."
         git clone https://github.com/Nativu5/Gemini-FastAPI.git "$FASTAPI_DIR" || {
             echo "Error: Failed to clone Gemini-FastAPI and no pre-downloaded folder found."
@@ -136,7 +195,7 @@ if [ ! -f "$FASTAPI_DIR/run.py" ]; then
         exit 1
     fi
 else
-    echo "Gemini-FastAPI is already present at $FASTAPI_DIR."
+    echo "Gemini-FastAPI is present at $FASTAPI_DIR."
 fi
 
 # Ensure Gemini-FastAPI patches: DoH, cookie extraction, client wrapper, and localhost binding
@@ -680,6 +739,72 @@ if old_fn in txt:
 ' 2>/dev/null || true
     fi
 fi
+
+# Ensure 1 req / 2s max frequency rate limiting and resilient session fallback in chat.py
+if [ -f "$FASTAPI_DIR/app/server/chat.py" ]; then
+    "$PYTHON_EXEC" -c '
+from pathlib import Path
+p = Path("'"$FASTAPI_DIR"'/app/server/chat.py")
+txt = p.read_text()
+
+# 1. Imports
+if "import asyncio" not in txt:
+    txt = "import asyncio\nimport time\n" + txt
+elif "import time" not in txt:
+    txt = "import time\n" + txt
+
+# 2. Rate limiter helper
+if "MIN_REQUEST_INTERVAL" not in txt:
+    rl_code = """
+_rate_limit_lock = asyncio.Lock()
+_last_request_time = 0.0
+_last_response_time = 0.0
+MIN_REQUEST_INTERVAL = 2.0  # Impose max request frequency: at most 1 request per 2 seconds
+
+async def _throttle_request():
+    global _last_request_time, _last_response_time
+    async with _rate_limit_lock:
+        now = time.monotonic()
+        target_time = max(_last_request_time, _last_response_time) + MIN_REQUEST_INTERVAL
+        if now < target_time:
+            wait_sec = target_time - now
+            logger.info(f"Rate limiting active: waiting {wait_sec:.2f}s before sending to Gemini...")
+            await asyncio.sleep(wait_sec)
+        _last_request_time = time.monotonic()
+
+def _mark_response_completed():
+    global _last_response_time
+    _last_response_time = time.monotonic()
+
+"""
+    txt = txt.replace("async def _send_with_split(", rl_code + "async def _send_with_split(")
+
+# 3. Add _throttle_request to _send_with_split
+if "await _throttle_request()" not in txt:
+    txt = txt.replace(
+        "async def _send_with_split(\n    session: ChatSession,\n    text: str,\n    files: list[Path | str | io.BytesIO] | None = None,\n    stream: bool = False,\n    temporary: bool = False,\n) -> AsyncGenerator[ModelOutput] | ModelOutput:\n    \"\"\"Send text to Gemini, splitting or converting to attachment if too long.\"\"\"\n",
+        "async def _send_with_split(\n    session: ChatSession,\n    text: str,\n    files: list[Path | str | io.BytesIO] | None = None,\n    stream: bool = False,\n    temporary: bool = False,\n) -> AsyncGenerator[ModelOutput] | ModelOutput:\n    \"\"\"Send text to Gemini, splitting or converting to attachment if too long.\"\"\"\n    await _throttle_request()\n"
+    )
+
+# 4. Resilient session fallback for streaming and any error
+if "should_fallback = reused_session" not in txt:
+    old_fallback = """        should_fallback = (
+            reused_session
+            and not stream
+            and _is_missing_chat_error(exc)
+        )"""
+    new_fallback = "        should_fallback = reused_session"
+    if old_fallback in txt:
+        txt = txt.replace(old_fallback, new_fallback)
+        txt = txt.replace("stream=False,\n            temporary=temporary,\n        )\n        return output, fallback_session, fallback_client", "stream=stream,\n            temporary=temporary,\n        )\n        return output, fallback_session, fallback_client")
+
+# 5. Streaming completion mark
+if "_mark_response_completed()" in txt and "yield \"data: [DONE]\\n\\n\"\\n        _mark_response_completed()" not in txt:
+    txt = txt.replace("yield \"data: [DONE]\\n\\n\"", "yield \"data: [DONE]\\n\\n\"\n        _mark_response_completed()")
+
+p.write_text(txt)
+' 2>/dev/null || true
+fi
 # Ensure StrEnum compatibility & DNS / SNI Proxy (dns.comss.one) support in gemini_webapi
 "$PYTHON_EXEC" -c '
 import glob
@@ -906,8 +1031,11 @@ from rich.markdown import Markdown
 class ThinkingOpenAIServerModel(OpenAIServerModel):
     """
     Subclass of OpenAIServerModel that preserves and displays Gemini reasoning_content
-    (thinking process) before tool execution or final answer generation.
+    (thinking process) before tool execution or final answer generation, and enforces
+    a maximum request frequency of 1 request per 2 seconds.
     """
+    _last_request_time = 0.0
+
     def generate(
         self,
         messages,
@@ -916,6 +1044,13 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
         tools_to_call_from=None,
         **kwargs,
     ) -> ChatMessage:
+        import time
+        now = time.time()
+        elapsed = now - ThinkingOpenAIServerModel._last_request_time
+        if elapsed < 2.0:
+            time.sleep(2.0 - elapsed)
+        ThinkingOpenAIServerModel._last_request_time = time.time()
+
         chat_message = super().generate(
             messages=messages,
             stop_sequences=stop_sequences,
@@ -923,6 +1058,7 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
             tools_to_call_from=tools_to_call_from,
             **kwargs,
         )
+        ThinkingOpenAIServerModel._last_request_time = time.time()
         raw = getattr(chat_message, "raw", None)
         if raw and getattr(raw, "choices", None) and len(raw.choices) > 0:
             msg = raw.choices[0].message
@@ -1076,6 +1212,12 @@ def quizmaster(max_questions: int = 0) -> str:
 
             answer_text = ""
             try:
+                now = time.time()
+                if "last_quiz_call" not in locals():
+                    last_quiz_call = 0.0
+                if now - last_quiz_call < 2.0:
+                    time.sleep(2.0 - (now - last_quiz_call))
+                last_quiz_call = time.time()
                 req = urllib.request.Request(
                     "http://127.0.0.1:8000/v1/chat/completions",
                     headers={"Content-Type": "application/json"},
@@ -1366,6 +1508,9 @@ fi
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k -TERM "$FASTAPI_PORT/tcp" 2>/dev/null || true
+    fi
     echo "Starting Gemini-FastAPI server on port $FASTAPI_PORT..."
     (cd "$FASTAPI_DIR" && nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" run.py > "$STACK_DIR/proxy_access.log" 2>&1 &)
     

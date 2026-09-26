@@ -51,7 +51,27 @@ A Puppeteer-based browser automation engine operating on local Chrome / Yandex B
 
 ---
 
-### Option A: Setup Open WebUI with Tools
+### Option A: Unified Bundle Installation (Recommended)
+
+Run the unified installer to cleanly stop any running processes, install/sync both suites, apply rate limiting, and register tools:
+
+```bash
+./install-bundle.sh
+# or
+./bundle-installer.sh
+```
+
+Manage the stack with:
+```bash
+./install-bundle.sh start    # Start Gemini-FastAPI (port 8000) and Open WebUI (port 8080)
+./install-bundle.sh status   # Check process and health status
+./install-bundle.sh stop     # Gracefully stop all stack services
+./install-bundle.sh restart  # Restart stack
+```
+
+---
+
+### Option B: Setup Open WebUI with Tools
 
 Run the Open WebUI auto-installer script:
 
@@ -62,10 +82,11 @@ Run the Open WebUI auto-installer script:
 - If `/path/to/open-webui` is omitted, defaults to `./open-webui`.
 - Deploys `agentic-browser` skill to `~/.agents/skills/agentic-browser`.
 - Registers `native_bash_tool` and `agentic_browser_tool` into `webui.db`.
+- Disables 4x parallel tasks (`task.*.enable=false`) in SQLite to safeguard API quotas.
 
 ---
 
-### Option B: Setup & Run Smolagent CLI
+### Option C: Setup & Run Smolagent CLI
 
 Run the all-in-one Smolagent launcher script:
 
@@ -92,18 +113,33 @@ Run the all-in-one Smolagent launcher script:
 
 ---
 
+## 🛡️ Reliability & Quota Protections
+
+- **Automatic Process Termination**: Installers automatically stop lingering processes and free ports 8000 & 8080.
+- **1 Req / 2s Rate Limiting**: Enforced on Gemini-FastAPI and Smolagent to prevent quota exhaustion on Google's web endpoint.
+- **Resilient Fallback**: Auto-heals multi-turn streaming session disconnects by replaying history on fresh sessions.
+
+---
+
 ## 📁 Repository Structure
 
 ```
 workplace-setup/
+├── install-bundle.sh            # Unified bundle installer & service manager
+├── bundle-installer.sh          # Symlink to install-bundle.sh
 ├── install_openwebui_tools.sh   # Open WebUI installation & SQLite tool injection script
 ├── setup_and_run_smolagent.sh   # Smolagent dependency checker, proxy runner & launcher
 ├── agent.sh                     # Smolagent CLI wrapper script (supports -f and -i)
+├── start-ai-stack.sh            # Local AI stack process launcher & manager
 ├── agentic-browser/             # Autonomous Puppeteer agent skill folder
 │   ├── SKILL.md                 # Agent skill instructions & tool contract
 │   ├── package.json             # Puppeteer dependency manifest
 │   └── scripts/
 │       └── agent.js             # Core Puppeteer browser automation logic (port 9222)
+├── quizmaster/                  # Multi-agent quiz generation skill
+├── OFFLINE_INSTALL_GUIDE.md     # Offline installation instructions for single bundle
+├── GEMINI_GEOBLOCK_ADAPTATION_GUIDE.md  # Geo-block bypass & SNI routing documentation
 ├── README.md                    # Workplace setup documentation
 └── .gitignore                   # Excludes .venv, node_modules, logs
 ```
+

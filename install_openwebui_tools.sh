@@ -3,21 +3,80 @@
 if [ -z "$BASH_VERSION" ]; then
     exec /usr/bin/env bash "$0" "$@"
 fi
-# Self-reexec with bash if invoked with sh/dash
-if [ -z "$BASH_VERSION" ]; then
-    exec /usr/bin/env bash "$0" "$@"
-fi
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${1:-$SCRIPT_DIR/open-webui}"
 
 # Configurable DNS-over-HTTPS (DoH) resolver for SNI routing around geoblocks
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://xbox-dns.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
 echo "=== Open WebUI Auto-Installer & Tool Sync ==="
+
+stop_running_stack() {
+    echo "Stopping any currently running AI stack processes (gemini-fastapi, open-webui)..."
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl --user stop open-webui.service 2>/dev/null || true
+    fi
+    pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    pkill -TERM -f "open-webui serve" 2>/dev/null || true
+    pkill -TERM -f "open_webui" 2>/dev/null || true
+
+    for port in 8000 8080; do
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -TERM "${port}/tcp" >/dev/null 2>&1 || true
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            local pids
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+            if [ -n "$pids" ]; then
+                kill -TERM $pids >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+
+    local waited=0
+    while [ $waited -lt 3 ]; do
+        local found=0
+        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+            found=1
+        fi
+        for port in 8000 8080; do
+            if command -v lsof >/dev/null 2>&1; then
+                if [ -n "$(lsof -ti:${port} 2>/dev/null || true)" ]; then
+                    found=1
+                fi
+            fi
+        done
+        if [ $found -eq 0 ]; then
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+
+    for port in 8000 8080; do
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -KILL "${port}/tcp" >/dev/null 2>&1 || true
+        fi
+        if command -v lsof >/dev/null 2>&1; then
+            local pids
+            pids=$(lsof -ti:"${port}" 2>/dev/null || true)
+            if [ -n "$pids" ]; then
+                kill -9 $pids >/dev/null 2>&1 || true
+            fi
+        fi
+    done
+    pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    pkill -9 -f "open-webui serve" 2>/dev/null || true
+    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
+    echo "Running stack processes stopped successfully."
+}
+
+# Stop any previous versions before proceeding with setup/update
+stop_running_stack
 
 # 1. Deploy agentic-browser and quizmaster skills to home directory
 echo "[1/4] Deploying agentic-browser and quizmaster skills..."
@@ -42,24 +101,47 @@ fi
 
 # 2. Check/Deploy Open WebUI repository
 echo "[2/4] Detecting Open WebUI codebase..."
-if [ ! -d "$TARGET_DIR" ] || [ ! -f "$TARGET_DIR/package.json" -a ! -d "$TARGET_DIR/backend" ]; then
-    if [ -d "$SCRIPT_DIR/open-webui" ] && [ -f "$SCRIPT_DIR/open-webui/package.json" ]; then
-        if [ "$TARGET_DIR" != "$SCRIPT_DIR/open-webui" ]; then
-            echo "Found pre-downloaded open-webui in $SCRIPT_DIR/open-webui. Deploying to $TARGET_DIR..."
-            mkdir -p "$TARGET_DIR"
-            cp -r "$SCRIPT_DIR/open-webui/"* "$TARGET_DIR/"
-        fi
-    elif [ -d "$SCRIPT_DIR/open-webui-fork" ] && [ -f "$SCRIPT_DIR/open-webui-fork/package.json" ]; then
-        echo "Found pre-downloaded open-webui-fork in $SCRIPT_DIR/open-webui-fork. Deploying to $TARGET_DIR..."
+if [ -d "$SCRIPT_DIR/open-webui" ] && [ -f "$SCRIPT_DIR/open-webui/package.json" ]; then
+    if [ "$TARGET_DIR" != "$SCRIPT_DIR/open-webui" ]; then
+        echo "Found pre-downloaded open-webui in $SCRIPT_DIR/open-webui. Syncing/updating to $TARGET_DIR..."
         mkdir -p "$TARGET_DIR"
-        cp -r "$SCRIPT_DIR/open-webui-fork/"* "$TARGET_DIR/"
-    elif [ -d "$SCRIPT_DIR/backend" ] && [ -f "$SCRIPT_DIR/package.json" ]; then
-        echo "Running directly inside Open WebUI codebase ($SCRIPT_DIR)."
-        TARGET_DIR="$SCRIPT_DIR"
-    elif [ -d "$HOME/local-ai-stack/open-webui" ] && [ -f "$HOME/local-ai-stack/open-webui/package.json" ]; then
-        echo "Using existing Open WebUI repository at $HOME/local-ai-stack/open-webui..."
-        TARGET_DIR="$HOME/local-ai-stack/open-webui"
-    elif command -v git >/dev/null 2>&1; then
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a --exclude='.venv' --exclude='backend/data' --exclude='data' "$SCRIPT_DIR/open-webui/" "$TARGET_DIR/"
+        else
+            cp -ru "$SCRIPT_DIR/open-webui/"* "$TARGET_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/open-webui/"* "$TARGET_DIR/"
+        fi
+    fi
+elif [ -d "$SCRIPT_DIR/open-webui-fork" ] && [ -f "$SCRIPT_DIR/open-webui-fork/package.json" ]; then
+    if [ "$TARGET_DIR" != "$SCRIPT_DIR/open-webui-fork" ]; then
+        echo "Found pre-downloaded open-webui-fork in $SCRIPT_DIR/open-webui-fork. Syncing/updating to $TARGET_DIR..."
+        mkdir -p "$TARGET_DIR"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a --exclude='.venv' --exclude='backend/data' --exclude='data' "$SCRIPT_DIR/open-webui-fork/" "$TARGET_DIR/"
+        else
+            cp -ru "$SCRIPT_DIR/open-webui-fork/"* "$TARGET_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/open-webui-fork/"* "$TARGET_DIR/"
+        fi
+    fi
+elif [ -d "$(dirname "$SCRIPT_DIR")/open-webui-fork" ] && [ -f "$(dirname "$SCRIPT_DIR")/open-webui-fork/package.json" ]; then
+    PARENT_FORK="$(dirname "$SCRIPT_DIR")/open-webui-fork"
+    if [ "$TARGET_DIR" != "$PARENT_FORK" ]; then
+        echo "Found local open-webui-fork in $PARENT_FORK. Syncing/updating to $TARGET_DIR..."
+        mkdir -p "$TARGET_DIR"
+        if command -v rsync >/dev/null 2>&1; then
+            rsync -a --exclude='.venv' --exclude='backend/data' --exclude='data' "$PARENT_FORK/" "$TARGET_DIR/"
+        else
+            cp -ru "$PARENT_FORK/"* "$TARGET_DIR/" 2>/dev/null || cp -r "$PARENT_FORK/"* "$TARGET_DIR/"
+        fi
+    fi
+elif [ -d "$SCRIPT_DIR/backend" ] && [ -f "$SCRIPT_DIR/package.json" ]; then
+    echo "Running directly inside Open WebUI codebase ($SCRIPT_DIR)."
+    TARGET_DIR="$SCRIPT_DIR"
+elif [ -d "$TARGET_DIR" ] && [ -f "$TARGET_DIR/.venv/bin/open-webui" ]; then
+    echo "Found existing Open WebUI installation with virtualenv at $TARGET_DIR."
+elif [ -d "$HOME/local-ai-stack/open-webui" ] && ([ -f "$HOME/local-ai-stack/open-webui/package.json" ] || [ -f "$HOME/local-ai-stack/open-webui/.venv/bin/open-webui" ]); then
+    echo "Using existing Open WebUI installation at $HOME/local-ai-stack/open-webui..."
+    TARGET_DIR="$HOME/local-ai-stack/open-webui"
+elif [ ! -d "$TARGET_DIR" ] || [ ! -f "$TARGET_DIR/package.json" -a ! -d "$TARGET_DIR/backend" -a ! -f "$TARGET_DIR/.venv/bin/open-webui" ]; then
+    if command -v git >/dev/null 2>&1; then
         echo "Open WebUI not found locally. Cloning official repository..."
         git clone https://github.com/open-webui/open-webui.git "$TARGET_DIR" || {
             echo "Error: Failed to clone open-webui from GitHub and no local pre-downloaded folder found."
@@ -145,13 +227,15 @@ fi
 
 # 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.comss.one) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
-if [ ! -d "$FASTAPI_DIR" ]; then
+if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ]; then
+    mkdir -p "$FASTAPI_DIR"
+    cp -ru "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
+elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ]; then
+    mkdir -p "$FASTAPI_DIR"
+    cp -ru "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
+elif [ ! -d "$FASTAPI_DIR" ]; then
     if [ -d "$HOME/local-ai-stack/gemini-fastapi" ]; then
         FASTAPI_DIR="$HOME/local-ai-stack/gemini-fastapi"
-    elif [ -d "$SCRIPT_DIR/gemini-fastapi" ]; then
-        FASTAPI_DIR="$SCRIPT_DIR/gemini-fastapi"
-    elif [ -d "$SCRIPT_DIR/Gemini-FastAPI" ]; then
-        FASTAPI_DIR="$SCRIPT_DIR/Gemini-FastAPI"
     fi
 fi
 
@@ -585,6 +669,122 @@ gemini:
                 "secure_1psidts: str = Field(..., description=\"Gemini Secure 1PSIDTS\")\n    secure_1psidcc: str | None = Field(default=None, description=\"Gemini Secure 1PSIDCC\")"
             )
         cfg_py.write_text(ctxt)
+
+    # 1.7 Ensure Gemini models and 1 req / 2s max frequency rate limiting in chat.py
+    chat_file = fastapi_dir / "app" / "server" / "chat.py"
+    if chat_file.exists():
+        ch_txt = chat_file.read_text()
+        if "import asyncio" not in ch_txt:
+            ch_txt = "import asyncio\nimport time\n" + ch_txt
+        elif "import time" not in ch_txt:
+            ch_txt = "import time\n" + ch_txt
+
+        if "gemini-3.7-flash" not in ch_txt and "MODEL_ALIASES" not in ch_txt:
+            old_m = """def _get_model_by_name(name: str) -> Model:
+    \"\"\"Retrieve a Model instance by name.\"\"\"
+    strategy = g_config.gemini.model_strategy
+    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
+
+    if name in custom_models:
+        return Model.from_dict(custom_models[name].model_dump())
+
+    if strategy == "overwrite":
+        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
+
+    return Model.from_name(name)"""
+
+            new_m = """MODEL_ALIASES = {
+    "gemini-3.8-flash": "gemini-3-flash",
+    "3.8-flash": "gemini-3-flash",
+    "3.8-Flash": "gemini-3-flash",
+    "gemini-3.5-flash-lite": "gemini-3-flash",
+    "3.5-flash-lite": "gemini-3-flash",
+    "3.5-Flash-Lite": "gemini-3-flash",
+    "gemini-3.1-pro": "gemini-3-pro",
+    "3.1-pro": "gemini-3-pro",
+    "3.1-Pro": "gemini-3-pro",
+    "gemini-extended-thinking": "gemini-3-flash-thinking",
+    "extended-thinking": "gemini-3-flash-thinking",
+    "Extended thinking": "gemini-3-flash-thinking",
+    "gemini-3.7-flash": "gemini-3-flash",
+    "gemini-3.7-pro": "gemini-3-pro",
+    "gemini-3-flash": "gemini-3-flash",
+    "gemini-3-flash-thinking": "gemini-3-flash-thinking",
+    "gemini-3-pro": "gemini-3-pro",
+    "flash": "gemini-3-flash",
+    "thinking": "gemini-3-flash-thinking",
+    "pro": "gemini-3-pro",
+    "gemini-flash": "gemini-3-flash",
+    "gemini-thinking": "gemini-3-flash-thinking",
+    "gemini-pro": "gemini-3-pro",
+    "gpt-4o": "gemini-3-flash",
+    "gpt-4": "gemini-3-pro",
+    "gpt-3.5-turbo": "gemini-3-flash",
+}
+
+def _get_model_by_name(name: str) -> Model:
+    strategy = g_config.gemini.model_strategy
+    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
+    if name in custom_models:
+        return Model.from_dict(custom_models[name].model_dump())
+    resolved_name = MODEL_ALIASES.get(name, name)
+    if resolved_name in custom_models:
+        return Model.from_dict(custom_models[resolved_name].model_dump())
+    if strategy == "overwrite":
+        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
+    try:
+        return Model.from_name(resolved_name)
+    except Exception:
+        return Model.BASIC_FLASH"""
+            if old_m in ch_txt:
+                ch_txt = ch_txt.replace(old_m, new_m)
+
+        if "MIN_REQUEST_INTERVAL" not in ch_txt:
+            rl_code = """
+_rate_limit_lock = asyncio.Lock()
+_last_request_time = 0.0
+_last_response_time = 0.0
+MIN_REQUEST_INTERVAL = 2.0  # Impose max request frequency: at most 1 request per 2 seconds
+
+async def _throttle_request():
+    global _last_request_time, _last_response_time
+    async with _rate_limit_lock:
+        now = time.monotonic()
+        target_time = max(_last_request_time, _last_response_time) + MIN_REQUEST_INTERVAL
+        if now < target_time:
+            wait_sec = target_time - now
+            logger.info(f"Rate limiting active: waiting {wait_sec:.2f}s before sending to Gemini...")
+            await asyncio.sleep(wait_sec)
+        _last_request_time = time.monotonic()
+
+def _mark_response_completed():
+    global _last_response_time
+    _last_response_time = time.monotonic()
+
+"""
+            ch_txt = ch_txt.replace("async def _send_with_split(", rl_code + "async def _send_with_split(")
+
+        if "await _throttle_request()" not in ch_txt:
+            ch_txt = ch_txt.replace(
+                "async def _send_with_split(\n    session: ChatSession,\n    text: str,\n    files: list[Path | str | io.BytesIO] | None = None,\n    stream: bool = False,\n    temporary: bool = False,\n) -> AsyncGenerator[ModelOutput] | ModelOutput:\n    \"\"\"Send text to Gemini, splitting or converting to attachment if too long.\"\"\"\n",
+                "async def _send_with_split(\n    session: ChatSession,\n    text: str,\n    files: list[Path | str | io.BytesIO] | None = None,\n    stream: bool = False,\n    temporary: bool = False,\n) -> AsyncGenerator[ModelOutput] | ModelOutput:\n    \"\"\"Send text to Gemini, splitting or converting to attachment if too long.\"\"\"\n    await _throttle_request()\n"
+            )
+
+        if "should_fallback = reused_session" not in ch_txt:
+            old_fallback = """        should_fallback = (
+            reused_session
+            and not stream
+            and _is_missing_chat_error(exc)
+        )"""
+            new_fallback = "        should_fallback = reused_session"
+            if old_fallback in ch_txt:
+                ch_txt = ch_txt.replace(old_fallback, new_fallback)
+                ch_txt = ch_txt.replace("stream=False,\n            temporary=temporary,\n        )\n        return output, fallback_session, fallback_client", "stream=stream,\n            temporary=temporary,\n        )\n        return output, fallback_session, fallback_client")
+
+        if "_mark_response_completed()" in ch_txt and "yield \"data: [DONE]\\n\\n\"\\n        _mark_response_completed()" not in ch_txt:
+            ch_txt = ch_txt.replace("yield \"data: [DONE]\\n\\n\"", "yield \"data: [DONE]\\n\\n\"\n        _mark_response_completed()")
+
+        chat_file.write_text(ch_txt)
 
 # 2. Patch gemini_webapi in all site-packages across stack and target venv
 search_roots = [
@@ -1049,6 +1249,29 @@ try:
         INSERT INTO config (key, value, updated_at)
         VALUES ('ui.default_models', '"gemini-3-flash"', strftime('%s', 'now'))
         ON CONFLICT(key) DO UPDATE SET value='"gemini-3-flash"', updated_at=strftime('%s', 'now')
+    """)
+
+    # Impose max request frequency: disable concurrent auto-tasks in Open WebUI
+    # (title, tags, follow_up, autocomplete) that flood the Gemini Web proxy with parallel requests
+    cursor.execute("""
+        INSERT INTO config (key, value, updated_at)
+        VALUES ('task.title.enable', 'false', strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value='false', updated_at=strftime('%s', 'now')
+    """)
+    cursor.execute("""
+        INSERT INTO config (key, value, updated_at)
+        VALUES ('task.tags.enable', 'false', strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value='false', updated_at=strftime('%s', 'now')
+    """)
+    cursor.execute("""
+        INSERT INTO config (key, value, updated_at)
+        VALUES ('task.follow_up.enable', 'false', strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value='false', updated_at=strftime('%s', 'now')
+    """)
+    cursor.execute("""
+        INSERT INTO config (key, value, updated_at)
+        VALUES ('task.autocomplete.enable', 'false', strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value='false', updated_at=strftime('%s', 'now')
     """)
 
     # Ensure model table exists and pre-populate true presets

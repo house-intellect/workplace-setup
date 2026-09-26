@@ -86,6 +86,9 @@ fi
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 
 if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+    if command -v fuser >/dev/null 2>&1; then
+        fuser -k -TERM "$FASTAPI_PORT/tcp" 2>/dev/null || true
+    fi
     echo "Starting Gemini-FastAPI server on port $FASTAPI_PORT..."
     (cd "$FASTAPI_DIR" && nohup env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" run.py > "$HOME/local-ai-stack/proxy_access.log" 2>&1 &)
     

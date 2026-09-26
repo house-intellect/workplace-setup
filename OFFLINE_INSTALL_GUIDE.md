@@ -1,47 +1,78 @@
-# Offline Installation Guide for AltLinux (Non-Root)
+# Offline Installation Guide for AltLinux / Linux (Non-Root)
 
-This bundle contains two completely self-sufficient offline archives for running the Local AI Stack without GitHub access:
+This bundle contains a single, completely self-sufficient offline archive for running the Local AI Stack without internet or GitHub access:
 
-## 📦 Included Archives
+## 📦 Single Unified Bundle Archive: `workplace-offline-bundle.tar.gz`
 
-1. **`smolagent-suite-offline.tar.gz`**
-   - Self-contained package for Smolagents CLI + Gemini-FastAPI server + agentic-browser skill.
-   - Includes pre-downloaded `gemini-fastapi` repository, `agentic-browser` with pre-installed `node_modules`, and auto-patching scripts.
-
-2. **`openwebui-suite-offline.tar.gz`**
-   - Self-contained package for Open WebUI + Gemini-FastAPI + native bash tool & agentic-browser skill.
-   - Includes full pre-downloaded `open-webui` repository, `gemini-fastapi`, and SQLite tool injection scripts.
+The archive contains one unified bundle installer file cache—no nested archives:
+- **`install-bundle.sh` & `bundle-installer.sh`**: Unified installer script that stops running processes, factors in both Smolagent and Open WebUI, and sets up everything in one pass.
+- **`gemini-fastapi/`**: Pre-downloaded Gemini-FastAPI proxy with resilient session fallback and **1 request per 2 seconds (0.5 Hz) rate limiting** to prevent Google quota violations.
+- **`open-webui/`**: Pre-downloaded Open WebUI source code ready for offline installation.
+- **`agentic-browser/`**: Puppeteer browser automation engine with pre-installed `node_modules`.
+- **`quizmaster/`**: Multi-agent orchestration and quiz generation skill.
+- **`setup_and_run_smolagent.sh`**: Smolagent CLI dependency checker and standalone runner.
+- **`install_openwebui_tools.sh`**: Open WebUI dependency builder and SQLite native tool syncer (disables 4x concurrent tasks to protect API quotas).
+- **`start-ai-stack.sh`**: Service manager for starting, stopping, or restarting the entire stack.
+- **`agent.sh`**: Command-line wrapper for running autonomous Smolagent tasks.
 
 ---
 
 ## 🚀 Quick Start Instructions
 
-### Option 1: Install & Run Smolagent CLI (Standalone Agent)
+### 1. Extract the Single Bundle Archive
 ```bash
-# 1. Extract the smolagent archive
-tar -xzf smolagent-suite-offline.tar.gz
-cd smolagent-setup
+tar -xzf workplace-offline-bundle.tar.gz
+cd workplace-bundle
+```
 
-# 2. Run the installer / agent runner (works 100% offline from local repo folders)
-./setup-and-run.sh "Echo 'Pipeline Test: OK' | tr a-z A-Z"
+### 2. Run the Unified Bundle Installer
+Run the bundle installer (automatically terminates any running stale processes, configures Python virtualenvs, syncs codebases, patches rate limits, and registers tools):
+```bash
+./install-bundle.sh
 # or
-./setup_and_run_smolagent.sh "Your prompt here"
+./bundle-installer.sh
+```
 
-# 3. Use ~/agent.sh anytime afterwards:
+---
+
+## 🎯 Modular Usage Options
+
+You can also run specific components using the bundle installer:
+
+### Option A: Install & Run Smolagent CLI (Standalone Agent)
+```bash
+# Setup or run a prompt through Smolagent CLI
+./install-bundle.sh smolagent "Echo 'Pipeline Test: OK' | tr a-z A-Z"
+
+# Use ~/agent.sh anytime afterwards:
 ~/agent.sh "Your prompt here"
 ```
 
-### Option 2: Install & Sync Open WebUI with Tools
+### Option B: Install & Sync Open WebUI with Tools Only
 ```bash
-# 1. Extract the openwebui archive
-tar -xzf openwebui-suite-offline.tar.gz
-cd openwebui-setup
-
-# 2. Run the Open WebUI installer
-./install-openwebui.sh
-# or
-./install_openwebui_tools.sh
-
-# 3. Start the entire stack (Gemini-FastAPI + Open WebUI):
-./start-ai-stack.sh
+./install-bundle.sh openwebui
 ```
+
+### Option C: Manage the Running AI Stack
+```bash
+# Start full stack (Gemini-FastAPI on port 8000 + Open WebUI on port 8080):
+./install-bundle.sh start
+
+# Check service health and running PIDs:
+./install-bundle.sh status
+
+# Stop all stack services and free ports:
+./install-bundle.sh stop
+
+# Restart all services:
+./install-bundle.sh restart
+```
+
+---
+
+## 🛡️ Stability & Quota Protections Included
+
+1. **Automatic Process Termination**: Installers automatically detect and terminate old instances of `gemini-fastapi` (port 8000) and `open-webui` (port 8080) before updating, eliminating stale cache bugs and port collisions.
+2. **1 Request per 2 Seconds Rate Limiting**: Both Smolagent and Gemini-FastAPI enforce a minimum 2.0s gap between requests, preventing quota rejections from Google's web endpoint.
+3. **Resilient Session Fallback**: Multi-turn chat desyncs automatically trigger fresh session replay instead of hanging or crashing streaming requests.
+4. **Single-Request WebUI Tuning**: Disabled automatic background generation tasks (`title`, `tags`, `follow_up`, `autocomplete`) in Open WebUI to prevent 4 concurrent requests per prompt.
