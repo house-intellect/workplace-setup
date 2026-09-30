@@ -167,8 +167,16 @@ show_status() {
     echo "=================================================="
     
     # 1. Gemini-FastAPI Status
-    local fastapi_pid
-    fastapi_pid=$(pgrep -f "gemini-fastapi.*run\.py" || true)
+    local fastapi_pid=""
+    if command -v lsof >/dev/null 2>&1; then
+        fastapi_pid=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null | head -n1 || true)
+    fi
+    if [ -z "$fastapi_pid" ] && command -v fuser >/dev/null 2>&1; then
+        fastapi_pid=$(fuser "$FASTAPI_PORT/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -v '^$' | head -n1 || true)
+    fi
+    if [ -z "$fastapi_pid" ]; then
+        fastapi_pid=$(pgrep -f "gemini-fastapi.*run\.py|run\.py" | head -n1 || true)
+    fi
     if [ -n "$fastapi_pid" ]; then
         echo "● Gemini-FastAPI: RUNNING (PID: $fastapi_pid)"
         if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
