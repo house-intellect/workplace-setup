@@ -84,6 +84,9 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+export CUSTOM_DOH_URL
+export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
 if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
     if command -v fuser >/dev/null 2>&1; then

@@ -64,10 +64,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
@@ -204,14 +204,18 @@ deploy_skills() {
     mkdir -p "$skills_base"
 
     if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
+        echo "   -> Overwriting previous agentic-browser skill..."
+        rm -rf "$skills_base/agentic-browser"
         mkdir -p "$skills_base/agentic-browser"
-        cp -ru "$SCRIPT_DIR/agentic-browser/"* "$skills_base/agentic-browser/" 2>/dev/null || cp -r "$SCRIPT_DIR/agentic-browser/"* "$skills_base/agentic-browser/"
+        cp -r "$SCRIPT_DIR/agentic-browser/"* "$skills_base/agentic-browser/"
         echo "   -> agentic-browser skill deployed."
     fi
 
     if [ -d "$SCRIPT_DIR/quizmaster" ]; then
+        echo "   -> Overwriting previous quizmaster skill..."
+        rm -rf "$skills_base/quizmaster"
         mkdir -p "$skills_base/quizmaster"
-        cp -ru "$SCRIPT_DIR/quizmaster/"* "$skills_base/quizmaster/" 2>/dev/null || cp -r "$SCRIPT_DIR/quizmaster/"* "$skills_base/quizmaster/"
+        cp -r "$SCRIPT_DIR/quizmaster/"* "$skills_base/quizmaster/"
         echo "   -> quizmaster skill deployed."
     fi
 }

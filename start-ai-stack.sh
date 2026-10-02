@@ -49,10 +49,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 

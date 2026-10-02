@@ -62,10 +62,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
@@ -291,17 +291,20 @@ fi
 # 3. Check/Install Gemini-FastAPI Server
 echo "[3/4] Setting up Gemini-FastAPI server..."
 if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ]; then
-    echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Syncing/updating to $FASTAPI_DIR..."
+    echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Cleanly overwriting previous version at $FASTAPI_DIR..."
+    rm -rf "$FASTAPI_DIR"
     mkdir -p "$FASTAPI_DIR"
-    cp -ru "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
+    cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
 elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ]; then
-    echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Syncing/updating to $FASTAPI_DIR..."
+    echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Cleanly overwriting previous version at $FASTAPI_DIR..."
+    rm -rf "$FASTAPI_DIR"
     mkdir -p "$FASTAPI_DIR"
-    cp -ru "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
+    cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
 elif [ -f "$SCRIPT_DIR/run.py" ] && [ -d "$SCRIPT_DIR/app" ]; then
-    echo "Running directly inside Gemini-FastAPI folder. Deploying to $FASTAPI_DIR..."
+    echo "Running directly inside Gemini-FastAPI folder. Cleanly overwriting previous version at $FASTAPI_DIR..."
+    rm -rf "$FASTAPI_DIR"
     mkdir -p "$FASTAPI_DIR"
-    cp -ru "$SCRIPT_DIR/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/"* "$FASTAPI_DIR/"
+    cp -r "$SCRIPT_DIR/"* "$FASTAPI_DIR/"
 elif [ ! -f "$FASTAPI_DIR/run.py" ]; then
     if command -v git >/dev/null 2>&1; then
         echo "Cloning Gemini-FastAPI from GitHub..."
@@ -341,7 +344,7 @@ if app_init.exists():
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
             if isinstance(doh_endpoint, str):
                 doh_endpoint = doh_endpoint.encode()
             curl_opts[CurlOpt.DOH_URL] = doh_endpoint
@@ -353,8 +356,8 @@ except Exception:
 
 """
         app_init.write_text(doh_code + txt)
-    elif "xbox-dns.ru" in txt:
-        txt = txt.replace("https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query")
+    elif "xbox-dns.ru" in txt or "dns.comss.one" in txt:
+        txt = txt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
         app_init.write_text(txt)
 
 # 2. Patch app/services/client.py (GeminiClientWrapper curl_options & AccountStatus check)
@@ -369,7 +372,7 @@ if wrap_file.exists():
         super().__init__(**kwargs)
         self.id = client_id
         import os
-        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
         if isinstance(doh_endpoint, str):
             doh_endpoint = doh_endpoint.encode()
         if secure_1psidcc := kwargs.get("secure_1psidcc"):
@@ -467,7 +470,7 @@ if helper_file.exists():
             """try:
             from curl_cffi import CurlOpt
             import os
-            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
             if isinstance(_doh, str):
                 _doh = _doh.encode()
             h_opts = {CurlOpt.DOH_URL: _doh}
@@ -476,8 +479,8 @@ if helper_file.exists():
         async with AsyncSession(impersonate="chrome", curl_options=h_opts) as client:"""
         )
         helper_file.write_text(htxt)
-    elif "xbox-dns.ru" in htxt:
-        htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query")
+    elif "xbox-dns.ru" in htxt or "dns.comss.one" in htxt:
+        htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
         helper_file.write_text(htxt)
 
 # 4. Patch app/services/pool.py (Rookiepy multi-browser extraction, fallback, DoH)
@@ -566,7 +569,7 @@ if pool_file.exists():
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -616,7 +619,7 @@ if pool_file.exists():
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
                 if isinstance(doh_url, str):
                     doh_url = doh_url.encode()
                 for b_name in ["firefox", "chrome", "chromium", "brave"]:
@@ -691,8 +694,8 @@ if pool_file.exists():
     import re
     if "class GeminiClientPool" in ptxt:
         ptxt = re.sub(r'class GeminiClientPool\(metaclass=Singleton\):.*?async def _ensure_client_ready', new_pool_code.strip() + "\n\n    async def _ensure_client_ready", ptxt, flags=re.DOTALL)
-    if "xbox-dns.ru" in ptxt:
-        ptxt = ptxt.replace("https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query")
+    if "xbox-dns.ru" in ptxt or "dns.comss.one" in ptxt:
+        ptxt = ptxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
     pool_file.write_text(ptxt)
 
 # 5. Ensure config/config.yaml exists and does not hold expired dummy credentials
@@ -959,7 +962,7 @@ for p in [
     if os.path.isdir(p):
         sp_dirs.add(p)
 
-doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
 
 for sp in sorted(sp_dirs):
     # 0. Patch gemini_webapi/__init__.py for global BaseSession DoH
@@ -1884,6 +1887,9 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+export CUSTOM_DOH_URL
+export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
 if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
     if command -v fuser >/dev/null 2>&1; then

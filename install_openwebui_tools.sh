@@ -57,10 +57,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
@@ -195,12 +195,16 @@ stop_running_stack
 # 1. Deploy agentic-browser and quizmaster skills to home directory
 echo "[1/4] Deploying agentic-browser and quizmaster skills..."
 rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
-mkdir -p "$HOME/.agents/skills/agentic-browser"
 if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
+    echo "Cleanly overwriting previous agentic-browser skill..."
+    rm -rf "$HOME/.agents/skills/agentic-browser"
+    mkdir -p "$HOME/.agents/skills/agentic-browser"
     cp -r "$SCRIPT_DIR/agentic-browser/"* "$HOME/.agents/skills/agentic-browser/"
 fi
-mkdir -p "$HOME/.agents/skills/quizmaster"
 if [ -d "$SCRIPT_DIR/quizmaster" ]; then
+    echo "Cleanly overwriting previous quizmaster skill..."
+    rm -rf "$HOME/.agents/skills/quizmaster"
+    mkdir -p "$HOME/.agents/skills/quizmaster"
     cp -r "$SCRIPT_DIR/quizmaster/"* "$HOME/.agents/skills/quizmaster/"
 fi
 
@@ -217,33 +221,33 @@ fi
 echo "[2/4] Detecting Open WebUI codebase..."
 if [ -d "$SCRIPT_DIR/open-webui" ] && [ -f "$SCRIPT_DIR/open-webui/package.json" ]; then
     if [ "$TARGET_DIR" != "$SCRIPT_DIR/open-webui" ]; then
-        echo "Found pre-downloaded open-webui in $SCRIPT_DIR/open-webui. Syncing/updating to $TARGET_DIR..."
+        echo "Found pre-downloaded open-webui in $SCRIPT_DIR/open-webui. Cleanly updating $TARGET_DIR..."
         mkdir -p "$TARGET_DIR"
         if command -v rsync >/dev/null 2>&1; then
-            rsync -a --exclude='.venv' --exclude='backend/data' --exclude='data' "$SCRIPT_DIR/open-webui/" "$TARGET_DIR/"
+            rsync -a --delete --exclude='.venv' --exclude='backend/data' --exclude='data' "$SCRIPT_DIR/open-webui/" "$TARGET_DIR/"
         else
-            cp -ru "$SCRIPT_DIR/open-webui/"* "$TARGET_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/open-webui/"* "$TARGET_DIR/"
+            cp -r "$SCRIPT_DIR/open-webui/"* "$TARGET_DIR/"
         fi
     fi
 elif [ -d "$SCRIPT_DIR/open-webui-fork" ] && [ -f "$SCRIPT_DIR/open-webui-fork/package.json" ]; then
     if [ "$TARGET_DIR" != "$SCRIPT_DIR/open-webui-fork" ]; then
-        echo "Found pre-downloaded open-webui-fork in $SCRIPT_DIR/open-webui-fork. Syncing/updating to $TARGET_DIR..."
+        echo "Found pre-downloaded open-webui-fork in $SCRIPT_DIR/open-webui-fork. Cleanly updating $TARGET_DIR..."
         mkdir -p "$TARGET_DIR"
         if command -v rsync >/dev/null 2>&1; then
-            rsync -a --exclude='.venv' --exclude='backend/data' --exclude='data' "$SCRIPT_DIR/open-webui-fork/" "$TARGET_DIR/"
+            rsync -a --delete --exclude='.venv' --exclude='backend/data' --exclude='data' "$SCRIPT_DIR/open-webui-fork/" "$TARGET_DIR/"
         else
-            cp -ru "$SCRIPT_DIR/open-webui-fork/"* "$TARGET_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/open-webui-fork/"* "$TARGET_DIR/"
+            cp -r "$SCRIPT_DIR/open-webui-fork/"* "$TARGET_DIR/"
         fi
     fi
 elif [ -d "$(dirname "$SCRIPT_DIR")/open-webui-fork" ] && [ -f "$(dirname "$SCRIPT_DIR")/open-webui-fork/package.json" ]; then
     PARENT_FORK="$(dirname "$SCRIPT_DIR")/open-webui-fork"
     if [ "$TARGET_DIR" != "$PARENT_FORK" ]; then
-        echo "Found local open-webui-fork in $PARENT_FORK. Syncing/updating to $TARGET_DIR..."
+        echo "Found local open-webui-fork in $PARENT_FORK. Cleanly updating $TARGET_DIR..."
         mkdir -p "$TARGET_DIR"
         if command -v rsync >/dev/null 2>&1; then
-            rsync -a --exclude='.venv' --exclude='backend/data' --exclude='data' "$PARENT_FORK/" "$TARGET_DIR/"
+            rsync -a --delete --exclude='.venv' --exclude='backend/data' --exclude='data' "$PARENT_FORK/" "$TARGET_DIR/"
         else
-            cp -ru "$PARENT_FORK/"* "$TARGET_DIR/" 2>/dev/null || cp -r "$PARENT_FORK/"* "$TARGET_DIR/"
+            cp -r "$PARENT_FORK/"* "$TARGET_DIR/"
         fi
     fi
 elif [ -d "$SCRIPT_DIR/backend" ] && [ -f "$SCRIPT_DIR/package.json" ]; then
@@ -344,14 +348,18 @@ else
     "$PY_CMD" -m venv "$VENV_DIR"
 fi
 
-# 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.comss.one) are Present
+# 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.bezmezhau.com) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
 if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ]; then
+    echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Cleanly overwriting previous version at $FASTAPI_DIR..."
+    rm -rf "$FASTAPI_DIR"
     mkdir -p "$FASTAPI_DIR"
-    cp -ru "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
+    cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
 elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ]; then
+    echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Cleanly overwriting previous version at $FASTAPI_DIR..."
+    rm -rf "$FASTAPI_DIR"
     mkdir -p "$FASTAPI_DIR"
-    cp -ru "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/" 2>/dev/null || cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
+    cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
 elif [ ! -d "$FASTAPI_DIR" ]; then
     if [ -d "$HOME/local-ai-stack/gemini-fastapi" ]; then
         FASTAPI_DIR="$HOME/local-ai-stack/gemini-fastapi"
@@ -384,7 +392,7 @@ if fastapi_dir.exists():
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
             if isinstance(doh_endpoint, str):
                 doh_endpoint = doh_endpoint.encode()
             curl_opts[CurlOpt.DOH_URL] = doh_endpoint
@@ -396,8 +404,8 @@ except Exception:
 
 """
             app_init.write_text(doh_code + atxt)
-        elif "xbox-dns.ru" in atxt:
-            atxt = atxt.replace("https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query")
+        elif "xbox-dns.ru" in atxt or "dns.comss.one" in atxt:
+            atxt = atxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
             app_init.write_text(atxt)
 
     # 1.2 Patch app/services/client.py (GeminiClientWrapper curl_options & AccountStatus check)
@@ -412,7 +420,7 @@ except Exception:
         super().__init__(**kwargs)
         self.id = client_id
         import os
-        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
         if isinstance(doh_endpoint, str):
             doh_endpoint = doh_endpoint.encode()
         if secure_1psidcc := kwargs.get("secure_1psidcc"):
@@ -510,7 +518,7 @@ except Exception:
                 """try:
             from curl_cffi import CurlOpt
             import os
-            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
             if isinstance(_doh, str):
                 _doh = _doh.encode()
             h_opts = {CurlOpt.DOH_URL: _doh}
@@ -519,8 +527,8 @@ except Exception:
         async with AsyncSession(impersonate="chrome", curl_options=h_opts) as client:"""
             )
             helper_file.write_text(htxt)
-        elif "xbox-dns.ru" in htxt:
-            htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.comss.one/dns-query")
+        elif "xbox-dns.ru" in htxt or "dns.comss.one" in htxt:
+            htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
             helper_file.write_text(htxt)
 
     # 1.4 Patch app/services/pool.py (Rookiepy multi-browser extraction, prioritize Firefox, DoH)
@@ -609,7 +617,7 @@ except Exception:
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -659,7 +667,7 @@ except Exception:
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
                 if isinstance(doh_url, str):
                     doh_url = doh_url.encode()
                 # Prioritize Firefox first
@@ -935,7 +943,7 @@ for p in [
     if os.path.isdir(p):
         sp_dirs.add(p)
 
-doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.comss.one/dns-query"))
+doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
 
 for sp in sorted(sp_dirs):
     # StrEnum compatibility
