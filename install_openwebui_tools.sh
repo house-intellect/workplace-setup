@@ -43,8 +43,15 @@ detect_firefox_doh() {
             local uri
             uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
             if [ -n "$uri" ]; then
-                echo "$uri"
-                return 0
+                case "$uri" in
+                    *xbox-dns*|*1.1.1.1*|*cloudflare*)
+                        continue
+                        ;;
+                    *)
+                        echo "$uri"
+                        return 0
+                        ;;
+                esac
             fi
         done
     done
@@ -134,6 +141,12 @@ stop_running_stack() {
                 found_occupying=1
             fi
         done
+        # Disable and remove standalone unshielded gemini-fastapi.service if present
+        if systemctl --user list-unit-files gemini-fastapi.service 2>/dev/null | grep -q "gemini-fastapi.service" || [ -f "$HOME/.config/systemd/user/gemini-fastapi.service" ]; then
+            systemctl --user disable --now gemini-fastapi.service 2>/dev/null || true
+            rm -f "$HOME/.config/systemd/user/gemini-fastapi.service" "$HOME/.config/systemd/user/default.target.wants/gemini-fastapi.service" 2>/dev/null || true
+            systemctl --user daemon-reload 2>/dev/null || true
+        fi
     fi
 
     if [ "$found_occupying" -eq 0 ]; then
@@ -1572,8 +1585,11 @@ fi
 if command -v systemctl >/dev/null 2>&1; then
     SERVICE_DIR="$HOME/.config/systemd/user"
     mkdir -p "$SERVICE_DIR"
-    if [ ! -f "$SERVICE_DIR/open-webui.service" ]; then
-        cat << EOF_SRV > "$SERVICE_DIR/open-webui.service"
+    # Remove obsolete standalone gemini-fastapi service if present
+    systemctl --user disable --now gemini-fastapi.service 2>/dev/null || true
+    rm -f "$SERVICE_DIR/gemini-fastapi.service" "$SERVICE_DIR/default.target.wants/gemini-fastapi.service" 2>/dev/null || true
+
+    cat << EOF_SRV > "$SERVICE_DIR/open-webui.service"
 [Unit]
 Description=Open WebUI and Local AI Stack
 After=network.target
@@ -1590,9 +1606,8 @@ StandardError=journal
 [Install]
 WantedBy=default.target
 EOF_SRV
-        systemctl --user daemon-reload 2>/dev/null || true
-        echo "✓ Configured systemd user service: $SERVICE_DIR/open-webui.service"
-    fi
+    systemctl --user daemon-reload 2>/dev/null || true
+    echo "✓ Configured systemd user service: $SERVICE_DIR/open-webui.service"
 fi
 
 echo "Open WebUI installation and tool sync complete!"

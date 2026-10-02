@@ -54,7 +54,7 @@ In many regions, Google restricts direct access to the Gemini web application (`
 
 Rather than tunneling all system traffic through a slow or detectable SOCKS/HTTP proxy, we route only Google hostnames through an SNI-resolving DNS-over-HTTPS (DoH) resolver. 
 
-* **Primary DoH Resolver**: `https://dns.comss.one/dns-query` (Configurable via `$CUSTOM_DOH_URL` / `$GEMINI_DOH_URL`, Fallback: `https://xbox-dns.ru/dns-query`)
+* **Primary DoH Resolver**: `https://dns.bezmezhau.com/dns-query` (Configurable via `$CUSTOM_DOH_URL` / `$GEMINI_DOH_URL`)
 * **How it works**: The DoH server resolves `gemini.google.com` to edge reverse proxies that forward TLS ClientHello SNI headers transparently, bypassing regional IP filtering while maintaining end-to-end TLS security.
 * **Implementation**: We inject `CurlOpt.DOH_URL` into `curl_cffi.requests.AsyncSession` or `BaseSession`:
 

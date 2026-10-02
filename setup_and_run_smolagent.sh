@@ -48,8 +48,15 @@ detect_firefox_doh() {
             local uri
             uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
             if [ -n "$uri" ]; then
-                echo "$uri"
-                return 0
+                case "$uri" in
+                    *xbox-dns*|*1.1.1.1*|*cloudflare*)
+                        continue
+                        ;;
+                    *)
+                        echo "$uri"
+                        return 0
+                        ;;
+                esac
             fi
         done
     done
@@ -139,6 +146,12 @@ stop_running_stack() {
                 found_occupying=1
             fi
         done
+        # Disable and remove standalone unshielded gemini-fastapi.service if present
+        if systemctl --user list-unit-files gemini-fastapi.service 2>/dev/null | grep -q "gemini-fastapi.service" || [ -f "$HOME/.config/systemd/user/gemini-fastapi.service" ]; then
+            systemctl --user disable --now gemini-fastapi.service 2>/dev/null || true
+            rm -f "$HOME/.config/systemd/user/gemini-fastapi.service" "$HOME/.config/systemd/user/default.target.wants/gemini-fastapi.service" 2>/dev/null || true
+            systemctl --user daemon-reload 2>/dev/null || true
+        fi
     fi
 
     if [ "$found_occupying" -eq 0 ]; then
