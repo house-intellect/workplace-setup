@@ -16,6 +16,61 @@ OPENWEBUI_DIR="$STACK_DIR/open-webui"
 FASTAPI_PORT=8000
 WEBUI_PORT=8080
 
+check_trash_execution() {
+    local cwd_phys
+    cwd_phys="$(pwd -P 2>/dev/null || pwd)"
+    case "$SCRIPT_DIR|$cwd_phys" in
+        *Trash*|*/.local/share/Trash/*|*/.Trash/*)
+            echo "❌ ERROR: Cannot run installation from inside Trash directory:"
+            echo "   SCRIPT_DIR: $SCRIPT_DIR"
+            echo "   CWD:        $cwd_phys"
+            echo ""
+            echo "   This happens if previous project directories were deleted via a file manager or trash"
+            echo "   while your terminal was still navigated inside them."
+            echo "   Please navigate to a clean folder outside of Trash, for example:"
+            echo "       cd ~"
+            echo "       tar -xzf workplace-ai-bundle.tar.gz"
+            echo "       cd workplace-setup && ./install-bundle.sh"
+            exit 1
+            ;;
+    esac
+}
+check_trash_execution
+
+# Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
+detect_firefox_doh() {
+    local dirs=(
+        "$HOME/.mozilla/firefox"
+        "$HOME/.var/app/org.mozilla.firefox/.mozilla/firefox"
+        "$HOME/snap/firefox/common/.mozilla/firefox"
+    )
+    for d in "${dirs[@]}"; do
+        [ -d "$d" ] || continue
+        for pref in "$d"/*/prefs.js; do
+            [ -f "$pref" ] || continue
+            local uri
+            uri=$(grep -E 'network\.trr\.(custom_)?uri' "$pref" 2>/dev/null | grep -o 'https://[^"]*' | head -n1 || true)
+            if [ -n "$uri" ]; then
+                echo "$uri"
+                return 0
+            fi
+        done
+    done
+    return 1
+}
+
+if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
+    DETECTED_DOH=$(detect_firefox_doh || true)
+    if [ -n "$DETECTED_DOH" ]; then
+        CUSTOM_DOH_URL="$DETECTED_DOH"
+    else
+        CUSTOM_DOH_URL="https://dns.comss.one/dns-query"
+    fi
+fi
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.comss.one/dns-query}}"
+export CUSTOM_DOH_URL
+export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
+
 # Clean proxy environment variables
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 export HF_HUB_OFFLINE=1
