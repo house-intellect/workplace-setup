@@ -1804,7 +1804,8 @@ def main():
     )
     agent = ToolCallingAgent(
         tools=[quizmaster, execute_bash, bash_tool, wait_for_quiz_question, select_quiz_option, type_quiz_answer, type_quiz_file],
-        model=model
+        model=model,
+        max_steps=1500
     )
     response = agent.run(full_prompt)
     print(response)
