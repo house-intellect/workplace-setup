@@ -23,11 +23,53 @@ class BrowserAgent {
         browserWSEndpoint: wsUrl,
         defaultViewport: null,
       });
+
+      // Automatically reset any CDP emulation or viewport overrides on all open pages
+      try {
+        const pages = await this.browser.pages();
+        for (const p of pages) {
+          await this.ensureFullViewport(p);
+        }
+      } catch (e) {}
+
+      // Keep viewport full and natural whenever new tabs/pages are created
+      this.browser.on('targetcreated', async (target) => {
+        if (target.type() === 'page') {
+          try {
+            const newPage = await target.page();
+            if (newPage) await this.ensureFullViewport(newPage);
+          } catch (e) {}
+        }
+      });
     } catch (err) {
       throw new Error(
         `Failed to connect to browser on 127.0.0.1:9222 (${err.message}). Ensure Chromium/Yandex Browser is running with: yandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins="*"`
       );
     }
+  }
+
+  async ensureFullViewport(page) {
+    if (!page) return;
+    try {
+      const u = typeof page.url === 'function' ? page.url() : '';
+      if (
+        u.startsWith('devtools://') ||
+        u.startsWith('chrome://') ||
+        u.startsWith('chrome-extension://')
+      ) {
+        return;
+      }
+      const client = await page.target().createCDPSession();
+      await client.send('Emulation.setDeviceMetricsOverride', {
+        width: 0,
+        height: 0,
+        deviceScaleFactor: 0,
+        mobile: false,
+      });
+      await client.send('Emulation.clearDeviceMetricsOverride');
+      await page.setViewport(null);
+      await client.detach();
+    } catch (e) {}
   }
 
   async listTabs() {
@@ -54,35 +96,56 @@ class BrowserAgent {
       throw new Error('No open pages/tabs found in browser. Please open a tab.');
     }
 
+    let selected = null;
     if (this.targetTabIndex !== null && pages[this.targetTabIndex]) {
-      return pages[this.targetTabIndex];
+      selected = pages[this.targetTabIndex];
+    } else if (this.targetUrlPattern) {
+      selected = pages.find((p) => p.url().toLowerCase().includes(this.targetUrlPattern.toLowerCase()));
     }
 
-    if (this.targetUrlPattern) {
-      const match = pages.find((p) => p.url().toLowerCase().includes(this.targetUrlPattern.toLowerCase()));
-      if (match) return match;
+    if (!selected) {
+      // 1. Prioritize actively visible/focused tab in browser window
+      for (const p of pages) {
+        try {
+          const u = p.url().toLowerCase();
+          if (
+            u.startsWith('devtools://') ||
+            u.startsWith('chrome://') ||
+            u.startsWith('chrome-extension://') ||
+            u.includes('search?') ||
+            u.includes('/search')
+          ) {
+            continue;
+          }
+          const isVisible = await p.evaluate(() => document.visibilityState === 'visible');
+          if (isVisible) {
+            selected = p;
+            break;
+          }
+        } catch (e) {}
+      }
     }
 
-    // 1. Prioritize actively visible/focused tab in browser window
-    for (const p of pages) {
-      try {
+    if (!selected) {
+      // 2. Normal pages fallback
+      const normalPages = pages.filter((p) => {
         const u = p.url().toLowerCase();
-        if (u.startsWith('devtools://') || u.startsWith('chrome://') || u.startsWith('chrome-extension://') || u.includes('search?') || u.includes('/search')) {
-          continue;
-        }
-        const isVisible = await p.evaluate(() => document.visibilityState === 'visible');
-        if (isVisible) {
-          return p;
-        }
-      } catch (e) {}
+        return (
+          !u.startsWith('devtools://') &&
+          !u.startsWith('chrome://') &&
+          !u.startsWith('chrome-extension://') &&
+          !u.includes('search?') &&
+          !u.includes('/search') &&
+          u !== 'about:blank'
+        );
+      });
+      selected = normalPages[normalPages.length - 1] || pages[0];
     }
 
-    // 2. Normal pages fallback
-    const normalPages = pages.filter((p) => {
-      const u = p.url().toLowerCase();
-      return !u.startsWith('devtools://') && !u.startsWith('chrome://') && !u.startsWith('chrome-extension://') && !u.includes('search?') && !u.includes('/search') && u !== 'about:blank';
-    });
-    return normalPages[normalPages.length - 1] || pages[0];
+    if (selected) {
+      await this.ensureFullViewport(selected);
+    }
+    return selected;
   }
 
   async getActivePage() {
@@ -95,22 +158,136 @@ class BrowserAgent {
     for (const page of pages) {
       if (page.url().startsWith('chrome://') || page.url().startsWith('chrome-extension://')) continue;
       try {
-        const client = await page.target().createCDPSession();
-        await client.send('Emulation.setDeviceMetricsOverride', {
-          width: 0,
-          height: 0,
-          deviceScaleFactor: 0,
-          mobile: false,
-        });
-        await client.send('Emulation.clearDeviceMetricsOverride');
-        await page.setViewport(null);
-        await client.detach();
-        results.push({ url: page.url(), status: 'restored_full_window' });
+        await this.ensureFullViewport(page);
+        const dims = await page.evaluate(() => ({
+          width: window.innerWidth,
+          height: window.innerHeight,
+          devicePixelRatio: window.devicePixelRatio,
+        }));
+        results.push({ url: page.url(), status: 'restored_full_window', dimensions: dims });
       } catch (err) {
         results.push({ url: page.url(), status: 'error', message: err.message });
       }
     }
     return results;
+  }
+
+  async goto(url) {
+    const page = await this.getPage();
+    let targetUrl = (url || '').trim();
+    if (!targetUrl.startsWith('http://') && !targetUrl.startsWith('https://')) {
+      targetUrl = 'https://' + targetUrl;
+    }
+    await page.goto(targetUrl, { waitUntil: 'networkidle2', timeout: 45000 });
+    return {
+      success: true,
+      url: page.url(),
+      title: await page.title(),
+    };
+  }
+
+  async screenshot(targetPath = null) {
+    const page = await this.getPage();
+    let filePath = targetPath ? targetPath.trim() : null;
+    if (!filePath) {
+      const ts = new Date().toISOString().replace(/[:.]/g, '-');
+      const picDir = path.join(process.env.HOME || '/tmp', 'Pictures');
+      if (fs.existsSync(picDir)) {
+        filePath = path.join(picDir, `screenshot_${ts}.png`);
+      } else {
+        filePath = `/tmp/screenshot_${ts}.png`;
+      }
+    }
+    filePath = path.resolve(filePath);
+    const parentDir = path.dirname(filePath);
+    if (!fs.existsSync(parentDir)) {
+      fs.mkdirSync(parentDir, { recursive: true });
+    }
+    await page.screenshot({ path: filePath, fullPage: false, captureBeyondViewport: false });
+    await this.ensureFullViewport(page);
+    return {
+      success: true,
+      path: filePath,
+      title: await page.title(),
+      url: page.url(),
+    };
+  }
+
+  async scroll(targetOrDirection = 'down') {
+    const page = await this.getPage();
+    const result = await page.evaluate((target) => {
+      const t = (target || 'down').toLowerCase().trim();
+      if (t === 'down') {
+        window.scrollBy({ top: 600, behavior: 'smooth' });
+        return { success: true, scrolled: 'down', scrollY: window.scrollY };
+      }
+      if (t === 'up') {
+        window.scrollBy({ top: -600, behavior: 'smooth' });
+        return { success: true, scrolled: 'up', scrollY: window.scrollY };
+      }
+      if (t === 'top') {
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+        return { success: true, scrolled: 'top', scrollY: 0 };
+      }
+      if (t === 'bottom') {
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+        return { success: true, scrolled: 'bottom', scrollY: window.scrollY };
+      }
+
+      // Find element to scroll into view
+      let el = null;
+      try {
+        el = document.querySelector(target);
+      } catch (e) {}
+
+      if (!el) {
+        el = Array.from(
+          document.querySelectorAll('button, a, input, textarea, select, [data-marker], [role="button"], h1, h2, h3, div')
+        ).find((e) => {
+          const txt = (e.innerText || '').toLowerCase().trim();
+          const marker = (e.getAttribute('data-marker') || '').toLowerCase().trim();
+          return txt === t || marker === t || txt.includes(t) || marker.includes(t);
+        });
+      }
+
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+        return { success: true, scrolled: 'element', target };
+      }
+      return { success: false, error: `Element matching "${target}" not found to scroll to` };
+    }, targetOrDirection);
+
+    if (!result.success) throw new Error(result.error);
+    await new Promise((r) => setTimeout(r, 600));
+    return result;
+  }
+
+  async checkErrors() {
+    const page = await this.getPage();
+    return await page.evaluate(() => {
+      const errorElements = Array.from(
+        document.querySelectorAll(
+          '[data-marker*="error"], .error, [class*="error-"], [class*="Error"], [role="alert"], .alert-danger, .has-error'
+        )
+      )
+        .filter((el) => {
+          const text = (el.innerText || '').trim();
+          const style = window.getComputedStyle(el);
+          return (
+            text.length > 0 &&
+            style.display !== 'none' &&
+            style.visibility !== 'hidden' &&
+            el.offsetHeight > 0
+          );
+        })
+        .map((el) => el.innerText.trim());
+
+      const uniqueErrors = Array.from(new Set(errorElements));
+      return {
+        count: uniqueErrors.length,
+        errors: uniqueErrors,
+      };
+    });
   }
 
   async getSemanticMap() {
@@ -153,102 +330,312 @@ class BrowserAgent {
     const page = await this.getPage();
     const result = await page.evaluate((target) => {
       const targetLower = target.toLowerCase().trim();
-      const elements = Array.from(
-        document.querySelectorAll(
-          'button, a, input[type=submit], input[type=button], [role="button"], [role="tab"], [role="option"], [data-marker], [debug-id], vertical-form-field label'
-        )
-      );
 
-      function matches(el) {
-        const text = (el.innerText || el.textContent || '').trim().toLowerCase();
-        const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
-        const debugId = (el.getAttribute('debug-id') || '').trim().toLowerCase();
-        const marker = (el.getAttribute('data-marker') || '').trim().toLowerCase();
-        const placeholder = (el.placeholder || '').trim().toLowerCase();
+      let match = null;
+      try {
+        match = document.querySelector(target);
+      } catch (e) {}
 
-        return (
-          text === targetLower ||
-          aria === targetLower ||
-          debugId === targetLower ||
-          marker === targetLower ||
-          placeholder === targetLower ||
-          text.includes(targetLower) ||
-          aria.includes(targetLower) ||
-          debugId.includes(targetLower)
+      if (!match) {
+        const elements = Array.from(
+          document.querySelectorAll(
+            'button, a, input[type=submit], input[type=button], input[type=radio], input[type=checkbox], [role="button"], [role="tab"], [role="option"], [role="radio"], [role="checkbox"], [data-marker], [debug-id], vertical-form-field label, label, li'
+          )
         );
+
+        function matches(el) {
+          const text = (el.innerText || el.textContent || '').trim().toLowerCase();
+          const aria = (el.getAttribute('aria-label') || '').trim().toLowerCase();
+          const debugId = (el.getAttribute('debug-id') || '').trim().toLowerCase();
+          const marker = (el.getAttribute('data-marker') || '').trim().toLowerCase();
+          const placeholder = (el.placeholder || '').trim().toLowerCase();
+          const val = (el.value || '').trim().toLowerCase();
+
+          return (
+            text === targetLower ||
+            marker === targetLower ||
+            aria === targetLower ||
+            debugId === targetLower ||
+            val === targetLower ||
+            placeholder === targetLower ||
+            marker.includes(targetLower) ||
+            text.includes(targetLower) ||
+            aria.includes(targetLower) ||
+            debugId.includes(targetLower)
+          );
+        }
+
+        match = elements.find(matches);
       }
 
-      const match = elements.find(matches);
       if (!match) return { success: false, error: `Element matching "${target}" not found` };
 
-      const clickable = match.closest('button, a, [role="button"]') || match;
+      match.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+
+      if (match.tagName === 'INPUT' && (match.type === 'radio' || match.type === 'checkbox')) {
+        match.checked = true;
+        match.dispatchEvent(new Event('change', { bubbles: true }));
+        match.click();
+        return { success: true, matchedTag: match.tagName, type: match.type, text: match.value || target };
+      }
+
+      const clickable = match.closest('button, a, [role="button"], label, li') || match;
       clickable.click();
-      return { success: true, matchedTag: clickable.tagName, text: (clickable.innerText || '').slice(0, 50) };
+
+      const innerInput = clickable.querySelector('input[type=radio], input[type=checkbox]');
+      if (innerInput) {
+        innerInput.checked = true;
+        innerInput.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+
+      return {
+        success: true,
+        matchedTag: clickable.tagName,
+        text: (clickable.innerText || clickable.textContent || '').trim().slice(0, 50),
+        dataMarker: clickable.getAttribute('data-marker'),
+      };
     }, target);
 
     if (!result.success) throw new Error(result.error);
+    await new Promise((r) => setTimeout(r, 400));
     return result;
   }
 
-  async input(target, value) {
+  // STEP-FILL IS THE DEFAULT INPUT WAY
+  async input(target, value, options = {}) {
     const page = await this.getPage();
-    const result = await page.evaluate((target, value) => {
-      const targetLower = target.toLowerCase().trim();
+    const delay = options.delay !== undefined ? parseInt(options.delay, 10) : 30; // default typing delay in ms
+    const stringValue = String(value ?? '');
 
-      function findInput() {
-        // 1. Direct input by debugId, placeholder, name, id
-        const direct = Array.from(document.querySelectorAll('input, textarea')).find((el) => {
-          return (
-            (el.getAttribute('debug-id') || '').toLowerCase() === targetLower ||
-            (el.placeholder || '').toLowerCase().includes(targetLower) ||
-            (el.name || '').toLowerCase() === targetLower ||
-            (el.id || '').toLowerCase() === targetLower
-          );
-        });
-        if (direct) return direct;
+    // Step 1: Find target input/textarea handle
+    const inputHandle = await page.evaluateHandle((targetStr) => {
+      const targetLower = targetStr.toLowerCase().trim();
 
-        // 2. By associated label or container
-        const labels = Array.from(document.querySelectorAll('label, .label, vertical-form-field, [role=heading]'));
-        for (const l of labels) {
-          if ((l.innerText || '').toLowerCase().includes(targetLower)) {
-            const container = l.closest('vertical-form-field, form, div');
-            if (container) {
-              const inp = container.querySelector('input:not([type=file]):not([type=submit]), textarea');
-              if (inp) return inp;
-            }
+      // 1. Direct input by debugId, data-marker, placeholder, name, id
+      const direct = Array.from(document.querySelectorAll('input, textarea')).find((el) => {
+        return (
+          (el.getAttribute('debug-id') || '').toLowerCase() === targetLower ||
+          (el.getAttribute('data-marker') || '').toLowerCase() === targetLower ||
+          (el.getAttribute('data-marker') || '').toLowerCase().includes(targetLower) ||
+          (el.placeholder || '').toLowerCase().includes(targetLower) ||
+          (el.name || '').toLowerCase() === targetLower ||
+          (el.id || '').toLowerCase() === targetLower
+        );
+      });
+      if (direct) return direct;
+
+      // 2. By associated label or container
+      const labels = Array.from(document.querySelectorAll('label, .label, vertical-form-field, [role=heading], div'));
+      for (const l of labels) {
+        const txt = (l.innerText || '').toLowerCase();
+        if (txt.includes(targetLower)) {
+          const container = l.closest('vertical-form-field, form, div, fieldset');
+          if (container) {
+            const inp = container.querySelector('input:not([type=file]):not([type=submit]):not([type=button]), textarea');
+            if (inp) return inp;
           }
         }
-        return null;
       }
 
-      const inputEl = findInput();
-      if (!inputEl) return { success: false, error: `Input for "${target}" not found` };
+      // 3. Fallback: try selector directly
+      try {
+        const bySel = document.querySelector(targetStr);
+        if (bySel && (bySel.tagName === 'INPUT' || bySel.tagName === 'TEXTAREA' || bySel.isContentEditable)) {
+          return bySel;
+        }
+      } catch (e) {}
 
-      // Set value with native property setter for Angular/React/Vue compatibility
-      const valueSetter = Object.getOwnPropertyDescriptor(inputEl, 'value')
-        ? Object.getOwnPropertyDescriptor(inputEl, 'value').set
-        : Object.getOwnPropertyDescriptor(Object.getPrototypeOf(inputEl), 'value').set;
+      return null;
+    }, target);
 
-      if (valueSetter) {
-        valueSetter.call(inputEl, value);
+    const el = inputHandle.asElement();
+    if (!el) {
+      throw new Error(`Input for "${target}" not found`);
+    }
+
+    // Scroll into view & focus
+    await page.evaluate((elem) => {
+      elem.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
+    }, el);
+    await new Promise((r) => setTimeout(r, 200));
+
+    await el.focus();
+
+    // Clear existing text
+    await page.evaluate((elem) => {
+      if (elem.value) {
+        elem.value = '';
+        elem.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }, el);
+
+    // Select all & backspace for clean synthetic state
+    await page.keyboard.down('Control');
+    await page.keyboard.press('KeyA');
+    await page.keyboard.up('Control');
+    await page.keyboard.press('Backspace');
+
+    // Step-fill: symbol by symbol with delay
+    for (let i = 0; i < stringValue.length; i++) {
+      const char = stringValue[i];
+      if (char === '\n') {
+        await page.keyboard.press('Enter');
+      } else if (char === '\t') {
+        await page.keyboard.press('Tab');
       } else {
-        inputEl.value = value;
+        await page.keyboard.type(char, { delay });
+      }
+    }
+
+    // Dispatch final synthetic events
+    const info = await page.evaluate((elem, expectedVal) => {
+      elem.dispatchEvent(new Event('input', { bubbles: true }));
+      elem.dispatchEvent(new Event('change', { bubbles: true }));
+      elem.dispatchEvent(new Event('blur', { bubbles: true }));
+
+      // Fallback: If value is still empty (e.g. strict controlled input ignoring synthetic typing), set via descriptor
+      if (!elem.value && expectedVal) {
+        const valueSetter = Object.getOwnPropertyDescriptor(elem, 'value')
+          ? Object.getOwnPropertyDescriptor(elem, 'value').set
+          : Object.getOwnPropertyDescriptor(Object.getPrototypeOf(elem), 'value').set;
+        if (valueSetter) {
+          valueSetter.call(elem, expectedVal);
+          elem.dispatchEvent(new Event('input', { bubbles: true }));
+          elem.dispatchEvent(new Event('change', { bubbles: true }));
+        }
       }
 
-      inputEl.dispatchEvent(new Event('input', { bubbles: true }));
-      inputEl.dispatchEvent(new Event('change', { bubbles: true }));
-      return { success: true, targetTag: inputEl.tagName };
-    }, target, value);
+      return {
+        tagName: elem.tagName,
+        value: elem.value,
+        name: elem.name || elem.id || elem.getAttribute('data-marker'),
+      };
+    }, el, stringValue);
+
+    return {
+      success: true,
+      stepFilled: true,
+      targetTag: info.tagName,
+      name: info.name,
+      value: info.value,
+    };
+  }
+
+  async stepFill(target, value, options = {}) {
+    return await this.input(target, value, options);
+  }
+
+  async selectDropdownOption(target, optionTextOrValue) {
+    const page = await this.getPage();
+    const result = await page.evaluate((targetStr, optStr) => {
+      const targetLower = targetStr.toLowerCase().trim();
+      const optLower = (optStr || '').toLowerCase().trim();
+
+      // 1. Check if target is a <select> element
+      let selectEl = null;
+      try {
+        selectEl = document.querySelector(targetStr);
+      } catch (e) {}
+
+      if (!selectEl) {
+        selectEl = Array.from(document.querySelectorAll('select')).find((s) => {
+          return (
+            (s.name || '').toLowerCase() === targetLower ||
+            (s.id || '').toLowerCase() === targetLower ||
+            (s.getAttribute('data-marker') || '').toLowerCase().includes(targetLower)
+          );
+        });
+      }
+
+      if (selectEl && selectEl.tagName === 'SELECT') {
+        const options = Array.from(selectEl.options);
+        const match = options.find(
+          (o) => (o.value || '').toLowerCase() === optLower || (o.text || '').toLowerCase().includes(optLower)
+        );
+        if (match) {
+          selectEl.value = match.value;
+          selectEl.dispatchEvent(new Event('change', { bubbles: true }));
+          return { success: true, type: 'select', selected: match.text, value: match.value };
+        }
+      }
+
+      // 2. Custom dropdown: click trigger to open
+      const trigger =
+        document.querySelector(targetStr) ||
+        Array.from(document.querySelectorAll('[role="combobox"], [data-marker], div, button')).find(
+          (el) =>
+            (el.innerText || '').toLowerCase().includes(targetLower) ||
+            (el.getAttribute('data-marker') || '').toLowerCase().includes(targetLower)
+        );
+
+      if (trigger) {
+        trigger.click();
+        return { success: true, type: 'opened_dropdown', waitingForOption: optStr };
+      }
+
+      return { success: false, error: `Could not find select or dropdown for "${targetStr}"` };
+    }, target, optionTextOrValue);
 
     if (!result.success) throw new Error(result.error);
+
+    if (result.waitingForOption) {
+      await new Promise((r) => setTimeout(r, 600));
+      const clicked = await page.evaluate((optStr) => {
+        const optLower = optStr.toLowerCase().trim();
+        const options = Array.from(
+          document.querySelectorAll('li, [role="option"], [data-marker*="option"], div, span')
+        ).filter((el) => {
+          const t = (el.innerText || '').toLowerCase().trim();
+          return t === optLower || t.includes(optLower);
+        });
+        if (options.length > 0) {
+          const target = options[options.length - 1];
+          target.click();
+          return { success: true, text: target.innerText.trim() };
+        }
+        return { success: false, error: `Option "${optStr}" not found in dropdown` };
+      }, optionTextOrValue);
+
+      if (!clicked.success) throw new Error(clicked.error);
+      return clicked;
+    }
+
     return result;
   }
 
   async upload(filePaths, targetContainer = null) {
     const page = await this.getPage();
-    const resolvedPaths = filePaths.map((p) => path.resolve(p));
-    for (const p of resolvedPaths) {
-      if (!fs.existsSync(p)) throw new Error(`File not found: ${p}`);
+    const resolvedPaths = [];
+
+    // Flatten in case paths contain comma-separated lists or directories
+    const rawPaths = [];
+    for (const p of filePaths) {
+      if (typeof p === 'string' && p.includes(',')) {
+        rawPaths.push(...p.split(',').map((s) => s.trim()).filter(Boolean));
+      } else {
+        rawPaths.push(p);
+      }
+    }
+
+    for (const p of rawPaths) {
+      const resolved = path.resolve(p);
+      if (!fs.existsSync(resolved)) {
+        throw new Error(`File or directory not found: ${p}`);
+      }
+      const stat = fs.statSync(resolved);
+      if (stat.isDirectory()) {
+        const files = fs
+          .readdirSync(resolved)
+          .filter((f) => /\.(jpe?g|png|webp|gif|svg|pdf|mp4|mov)$/i.test(f))
+          .map((f) => path.join(resolved, f));
+        resolvedPaths.push(...files);
+      } else {
+        resolvedPaths.push(resolved);
+      }
+    }
+
+    if (resolvedPaths.length === 0) {
+      throw new Error(`No files found to upload in: ${filePaths.join(', ')}`);
     }
 
     const inputs = await page.$$('input[type=file]');
@@ -259,7 +646,7 @@ class BrowserAgent {
     if (targetContainer) {
       const containerInput = await page.evaluateHandle((containerTarget) => {
         const containers = Array.from(
-          document.querySelectorAll('vertical-form-field, material-drawer, [role=dialog], .modal')
+          document.querySelectorAll('vertical-form-field, material-drawer, [role=dialog], .modal, [data-marker]')
         );
         const match = containers.find((c) => (c.innerText || '').toLowerCase().includes(containerTarget.toLowerCase()));
         return match ? match.querySelector('input[type=file]') : null;
@@ -277,6 +664,11 @@ class BrowserAgent {
     }
 
     await chosenInput.uploadFile(...resolvedPaths);
+    await page.evaluate((el) => {
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    }, chosenInput);
+
     return { success: true, count: resolvedPaths.length, files: resolvedPaths };
   }
 
@@ -399,128 +791,62 @@ class BrowserAgent {
             return null;
           }
 
-          const headings = Array.from(
-            document.querySelectorAll(
-              '[class*="markdown"], [class*="markup"], .question_text, [data-qa*="question"], h1, h2, h3, [class*="question"], [class*="title"], legend'
-            )
-          )
-            .map((h) => (h.innerText || '').trim())
-            .filter(
-              (t) =>
-                t.length > 5 &&
-                !t.includes('Take later') &&
-                !t.includes('Завершить') &&
-                !t.includes('Всего осталось') &&
-                t.length < 1500
-            );
-
-          const questionText = headings[0] || document.title || 'Quiz Question';
-
-          if (prevQ) {
-            const qNumMatch = questionText.match(/question\s+(\d+)/i);
-            const prevNumMatch = prevQ.match(/question\s+(\d+)/i);
-            if (qNumMatch && prevNumMatch && qNumMatch[1] === prevNumMatch[1]) {
-              return null;
-            }
-            if (
-              questionText === prevQ ||
-              questionText.includes(prevQ) ||
-              prevQ.includes(questionText) ||
-              window.location.href === prevQ ||
-              window.location.href.endsWith(prevQ)
-            ) {
-              return null;
+          let qText = '';
+          const qEl = document.querySelector('.question_text, [class*="question_text"], .question, [class*="question"]');
+          if (qEl) {
+            qText = (qEl.innerText || '').trim();
+          }
+          if (!qText) {
+            const headings = Array.from(document.querySelectorAll('h1, h2, h3, h4, .title'));
+            for (const h of headings) {
+              const ht = (h.innerText || '').trim();
+              if (ht && !ht.includes('Quiz') && !ht.includes('Question')) {
+                qText = ht;
+                break;
+              }
             }
           }
 
-          if (isOpenEnded) {
-            return {
-              status: 'ready',
-              type: 'open_ended',
-              question: questionText,
-              url: window.location.href,
-            };
-          }
-
-          const seen = new Set();
-          const uniqueCandidates = [];
-          for (let i = 0; i < candidates.length; i++) {
-            const c = candidates[i];
-            const t = getDesc(c, i);
-            if (t && !seen.has(t)) {
-              seen.add(t);
-              uniqueCandidates.push(c);
-            }
-          }
-
-          if (uniqueCandidates.length < 2) {
-            return null;
-          }
-
-          const isMulti = uniqueCandidates.some(
-            (c) => c.getAttribute('role') === 'checkbox' || c.type === 'checkbox'
-          );
-
-          const options = uniqueCandidates.map((el, idx) => {
-            const radio = el.querySelector('input[type="radio"], input[type="checkbox"]');
-            return {
-              id: idx,
-              text: getDesc(el, idx),
-              isSelected: el.classList.contains('selected') || (radio && radio.checked) || el.checked === true,
-            };
-          });
+          const options = candidates.map((el, idx) => ({
+            index: idx,
+            text: getDesc(el, idx),
+          }));
 
           return {
             status: 'ready',
-            type: 'choice',
-            question: questionText,
-            isMulti,
-            options,
+            type: isChoice ? 'choice' : 'open_ended',
+            question: qText,
+            options: options,
             url: window.location.href,
           };
         }
 
-        const initial = extractQuizState();
-        if (initial) return resolve(initial);
+        const initialState = extractQuizState();
+        if (initialState && initialState.question !== prevQ) {
+          resolve(initialState);
+          return;
+        }
 
         const observer = new MutationObserver(() => {
           const state = extractQuizState();
-          if (state) {
+          if (state && state.question !== prevQ) {
             cleanup();
             resolve(state);
           }
         });
-
-        observer.observe(document.body, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          characterData: true,
-        });
+        observer.observe(document.body, { childList: true, subtree: true });
 
         const timer = setInterval(() => {
           const state = extractQuizState();
-          if (state) {
+          if (state && state.question !== prevQ) {
             cleanup();
             resolve(state);
           }
         }, 400);
 
-        const clickHandler = () => {
-          setTimeout(() => {
-            const state = extractQuizState();
-            if (state) {
-              cleanup();
-              resolve(state);
-            }
-          }, 300);
-        };
-        document.addEventListener('click', clickHandler, { capture: true });
-
         function cleanup() {
           observer.disconnect();
           clearInterval(timer);
-          document.removeEventListener('click', clickHandler, { capture: true });
         }
       });
     };
@@ -595,7 +921,7 @@ class BrowserAgent {
         });
       }
 
-      // 3. Numeric / "image X" index match (e.g. "image 1" -> 0, or "2" -> 1)
+      // 3. Numeric match
       if (!match) {
         const numMatch = targetStr.match(/(?:image|option)?\s*(\d+)/i);
         if (numMatch) {
@@ -779,7 +1105,8 @@ class BrowserAgent {
     else cleanArgs.push(a);
   }
 
-  const [command, arg1, ...rest] = cleanArgs;
+  const [rawCommand, arg1, ...rest] = cleanArgs;
+  const command = (rawCommand || '').toLowerCase().replace(/_/g, '-');
   const agent = new BrowserAgent({ url: urlPattern, tab: tabIndex });
   await agent.init();
 
@@ -791,14 +1118,38 @@ class BrowserAgent {
       case 'map':
         console.log(JSON.stringify(await agent.getSemanticMap(), null, 2));
         break;
+      case 'goto':
+      case 'navigate':
+        console.log(JSON.stringify(await agent.goto(arg1), null, 2));
+        break;
+      case 'screenshot':
+        console.log(JSON.stringify(await agent.screenshot(arg1 || null), null, 2));
+        break;
+      case 'scroll':
+        console.log(JSON.stringify(await agent.scroll(arg1 || 'down'), null, 2));
+        break;
       case 'click':
         console.log(JSON.stringify(await agent.click(arg1)));
         break;
       case 'input':
-        console.log(JSON.stringify(await agent.input(arg1, rest.join(' '))));
+      case 'step-fill':
+      case 'stepfill': {
+        const value = rest.join(' ');
+        console.log(JSON.stringify(await agent.input(arg1, value)));
         break;
+      }
+      case 'select-option':
+      case 'select-dropdown': {
+        const opt = rest.join(' ');
+        console.log(JSON.stringify(await agent.selectDropdownOption(arg1, opt), null, 2));
+        break;
+      }
       case 'upload':
         console.log(JSON.stringify(await agent.upload([arg1, ...rest])));
+        break;
+      case 'errors':
+      case 'check-errors':
+        console.log(JSON.stringify(await agent.checkErrors(), null, 2));
         break;
       case 'reset-viewport':
       case 'fix-viewport':
@@ -811,7 +1162,7 @@ class BrowserAgent {
         console.log(await agent.getText(arg1 || null));
         break;
       case 'eval':
-        console.log(JSON.stringify(await agent.eval(arg1), null, 2));
+        console.log(JSON.stringify(await agent.eval(arg1 || rest.join(' ')), null, 2));
         break;
       case 'wait-quiz':
         console.log(JSON.stringify(await agent.waitForQuiz(arg1 || ''), null, 2));
@@ -833,15 +1184,21 @@ class BrowserAgent {
       default:
         console.log(
           JSON.stringify({
-            error: `Unknown command: ${command}`,
+            error: `Unknown command: ${rawCommand}`,
             commands: [
               'tabs',
               'map',
+              'goto <url>',
               'click <target>',
-              'input <target> <value>',
-              'upload <files...>',
+              'input <target> <value> (step-fill by default)',
+              'step-fill <target> <value>',
+              'select-option <target> <option>',
+              'upload <files...|folder>',
+              'screenshot [path]',
+              'scroll [down|up|top|bottom|<target>]',
+              'errors',
               'reset-viewport',
-              'wait <query>',
+              'wait <query> [timeoutMs]',
               'text [selector]',
               'eval <code>',
               'wait-quiz [prev]',

@@ -51,6 +51,18 @@ A Puppeteer-based browser automation engine operating on local Chrome / Yandex B
 
 ---
 
+### ⚡ One-Liner Quick Install (Google Drive Bundle)
+
+To download the standalone self-sufficient bundle and launch the AI stack directly:
+```bash
+curl -sSL "https://drive.usercontent.google.com/download?id=17tfa-upwDHmz1f7ha4vOu7ys2kieWjgk&export=download&confirm=t" -o workplace-ai-bundle.tar.gz && tar -xzf workplace-ai-bundle.tar.gz && cd workplace-setup && ./setup_and_run_smolagent.sh
+```
+
+Or download and execute the all-in-one setup launcher:
+```bash
+curl -sSL "https://drive.usercontent.google.com/download?id=1Iaay_z_SXyNVvCLPQ7WjzpilH7ghsSqE&export=download&confirm=t" -o setup.sh && bash setup.sh
+```
+
 ### Option A: Unified Bundle Installation (Recommended)
 
 Run the unified installer to cleanly stop any running processes, install/sync both suites, apply rate limiting, and register tools:

@@ -1238,6 +1238,148 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
 
         return chat_message
 
+    def parse_tool_calls(self, message: ChatMessage) -> ChatMessage:
+        """
+        Robust multi-strategy parser that reliably extracts tool calls even from
+        verbose model responses where tool call JSON/markdown is only a small snippet.
+        """
+        import uuid
+        import re
+        from smolagents.models import ChatMessageToolCall, ChatMessageToolCallFunction, parse_json_if_needed
+
+        message.role = getattr(message, "role", "assistant")
+        if message.tool_calls and len(message.tool_calls) > 0:
+            for tc in message.tool_calls:
+                tc.function.arguments = parse_json_if_needed(tc.function.arguments)
+            return message
+
+        content = message.content or ""
+        if not content:
+            raise ValueError("Message contains no content and no tool calls.")
+
+        extracted_calls = []
+
+        def add_call(name: str, args: any):
+            if not name:
+                return
+            clean_name = re.sub(r"^(?:functions|tools|default_api)\.", "", str(name).strip())
+            # Normalize common tool aliases
+            if clean_name in ["bash_tool", "bash", "sh", "run_command", "execute_command", "terminal", "shell"]:
+                clean_name = "execute_bash"
+            elif clean_name in ["browser", "agentic_browser", "agentic_browser_tool"]:
+                clean_name = "agentic_browser_tool"
+
+            clean_args = args
+            if isinstance(clean_args, str):
+                try:
+                    clean_args = json.loads(clean_args)
+                except Exception:
+                    if clean_name == "execute_bash":
+                        clean_args = {"command": clean_args.strip()}
+                    else:
+                        clean_args = {"input": clean_args.strip()}
+            elif not isinstance(clean_args, dict):
+                clean_args = {}
+
+            extracted_calls.append(
+                ChatMessageToolCall(
+                    id=str(uuid.uuid4()),
+                    type="function",
+                    function=ChatMessageToolCallFunction(name=clean_name, arguments=clean_args)
+                )
+            )
+
+        # Strategy 1: Gemini-FastAPI tagged protocol [ToolCalls][Call: name]...[/Call][/ToolCalls]
+        call_re = re.compile(r"\[\s*Call\s*:\s*([^\]]+)\](.*?)\[\s*/\s*Call\s*\]", re.DOTALL | re.IGNORECASE)
+        param_re = re.compile(r"\[\s*CallParameter\s*:\s*([^\]]+)\](.*?)\[\s*/\s*CallParameter\s*\]", re.DOTALL | re.IGNORECASE)
+        fastapi_matches = list(call_re.finditer(content))
+        if fastapi_matches:
+            for m in fastapi_matches:
+                t_name = m.group(1).strip()
+                body = m.group(2)
+                t_args = {}
+                for pm in param_re.finditer(body):
+                    pname = pm.group(1).strip()
+                    pval = pm.group(2).strip()
+                    pval = re.sub(r"^`{3,}(?:[a-zA-Z0-9_-]+)?\n?(.*?)\n?`{3,}$", r"\1", pval, flags=re.DOTALL).strip()
+                    t_args[pname] = pval
+                add_call(t_name, t_args)
+
+        # Strategy 2: Extract balanced JSON objects anywhere in text
+        if not extracted_calls:
+            # First look for ```json ... ``` code blocks
+            code_block_re = re.compile(r"```(?:json|tool_call|action)?\s*\n?(\{.*?\})\n?```", re.DOTALL | re.IGNORECASE)
+            candidates = []
+            for cb in code_block_re.finditer(content):
+                try:
+                    parsed = json.loads(cb.group(1).strip())
+                    if isinstance(parsed, dict):
+                        candidates.append(parsed)
+                except Exception:
+                    pass
+
+            # If none in code blocks, scan the entire text with brace counting
+            if not candidates:
+                in_str = False
+                escape = False
+                depth = 0
+                start_i = None
+                for i, ch in enumerate(content):
+                    if ch == '"' and not escape:
+                        in_str = not in_str
+                    elif ch == '\\' and in_str:
+                        escape = not escape
+                        continue
+                    if escape:
+                        escape = False
+                        continue
+                    if not in_str:
+                        if ch == '{':
+                            if depth == 0:
+                                start_i = i
+                            depth += 1
+                        elif ch == '}' and depth > 0:
+                            depth -= 1
+                            if depth == 0 and start_i is not None:
+                                cand = content[start_i : i + 1]
+                                try:
+                                    parsed = json.loads(cand)
+                                    if isinstance(parsed, dict):
+                                        candidates.append(parsed)
+                                except Exception:
+                                    pass
+                                start_i = None
+
+            for obj in candidates:
+                name = obj.get("name") or obj.get("action") or obj.get("function") or obj.get("tool") or obj.get("tool_name") or obj.get("call")
+                if isinstance(name, dict) and "name" in name:
+                    name = name["name"]
+                args = obj.get("arguments") or obj.get("args") or obj.get("action_input") or obj.get("parameters") or obj.get("params") or obj.get("input")
+                if name:
+                    add_call(name, args)
+
+        # Strategy 3: ReAct pattern (Action: ... \n Action Input: ...)
+        if not extracted_calls:
+            react_match = re.search(r"Action\s*:\s*([^\n]+)\s*\nAction Input\s*:\s*(.*)", content, re.DOTALL | re.IGNORECASE)
+            if react_match:
+                t_name = react_match.group(1).strip()
+                raw_input = react_match.group(2).strip()
+                add_call(t_name, raw_input)
+
+        # Strategy 4: Raw bash markdown block fallback (```bash ... ``` or ```sh ... ```)
+        if not extracted_calls:
+            bash_block_match = re.search(r"```(?:bash|sh)\s*\n(.*?)\n```", content, re.DOTALL | re.IGNORECASE)
+            if bash_block_match:
+                cmd = bash_block_match.group(1).strip()
+                if cmd:
+                    add_call("execute_bash", {"command": cmd})
+
+        if not extracted_calls:
+            return super().parse_tool_calls(message)
+
+        message.tool_calls = extracted_calls
+        return message
+
 @tool
 def execute_bash(command: str) -> str:
     """
@@ -1268,6 +1410,16 @@ def execute_bash(command: str) -> str:
         return "Command timed out after 120 seconds."
     except Exception as e:
         return f"Execution error: {str(e)}"
+
+@tool
+def bash_tool(command: str) -> str:
+    """
+    Alias for execute_bash. Executes a shell command in a full Bash environment on the local machine and returns stdout/stderr.
+
+    Args:
+        command: The bash command string or multiline script to execute in /bin/bash.
+    """
+    return execute_bash(command)
 
 @tool
 def quizmaster(max_questions: int = 0) -> str:
@@ -1562,7 +1714,7 @@ def main():
         api_key=auth_token or "not-needed"
     )
     agent = ToolCallingAgent(
-        tools=[quizmaster, execute_bash, wait_for_quiz_question, select_quiz_option, type_quiz_answer, type_quiz_file],
+        tools=[quizmaster, execute_bash, bash_tool, wait_for_quiz_question, select_quiz_option, type_quiz_answer, type_quiz_file],
         model=model
     )
     response = agent.run(full_prompt)

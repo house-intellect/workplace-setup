@@ -1120,7 +1120,13 @@ class Tools:
     def __init__(self):
         pass
 
-    async def bash_tool(self, command: str) -> str:
+    async def execute_bash(self, command: str) -> str:
+        """
+        Execute any command or script in a full Bash terminal environment.
+
+        :param command: The bash command line or multiline script to execute in /bin/bash.
+        :return: Terminal stdout and stderr output.
+        """
         try:
             result = subprocess.run(
                 command,
@@ -1140,27 +1146,52 @@ class Tools:
             return "Command timed out after 120 seconds."
         except Exception as e:
             return str(e)
+
+    async def bash_tool(self, command: str) -> str:
+        """
+        Execute any command or script in a full Bash terminal environment (alias for execute_bash).
+
+        :param command: The bash command line or multiline script to execute in /bin/bash.
+        :return: Terminal stdout and stderr output.
+        """
+        return await self.execute_bash(command)
 '''
 
-bash_specs = [{
-    "name": "bash_tool",
-    "description": "Execute any command or script in a full Bash terminal environment. Fully supports command piping (|), redirection (>, >>), chaining (&&, ||, ;), background jobs, subshells, environment variables, and multiline shell scripts.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "The bash command line or multiline script to execute in /bin/bash."
-            }
-        },
-        "required": ["command"]
+bash_specs = [
+    {
+        "name": "execute_bash",
+        "description": "Execute any command or script in a full Bash terminal environment. Fully supports command piping (|), redirection (>, >>), chaining (&&, ||, ;), background jobs, subshells, environment variables, and multiline shell scripts.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command line or multiline script to execute in /bin/bash."
+                }
+            },
+            "required": ["command"]
+        }
+    },
+    {
+        "name": "bash_tool",
+        "description": "Execute any command or script in a full Bash terminal environment (alias for execute_bash).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The bash command line or multiline script to execute in /bin/bash."
+                }
+            },
+            "required": ["command"]
+        }
     }
-}]
+]
 
 browser_content = '''"""
 title: Agentic Browser Tool
 author: Local AI Stack
-version: 1.0.0
+version: 1.2.0
 description: Autonomous semantic browser navigation tool using Puppeteer on port 9222
 """
 
@@ -1171,48 +1202,78 @@ class Tools:
     def __init__(self):
         pass
 
-    async def agentic_browser(self, action: str, target: str = "", value: str = "") -> str:
+    async def agentic_browser(
+        self,
+        action: str,
+        target: str = "",
+        value: str = "",
+        tab: int = -1
+    ) -> str:
+        """
+        Interact with the browser autonomously using semantic mapping, step-fill input, and navigation.
+
+        :param action: Action to perform: 'map', 'click', 'input' (step-fill by default), 'step_fill', 'goto', 'screenshot', 'scroll', 'select_option', 'upload', 'errors', 'eval', 'tabs', 'wait', 'text', 'reset_viewport'.
+        :param target: Target element text, placeholder, selector, URL, direction ('down'/'up'/'bottom'/'top'), or code.
+        :param value: Value to type/input, option to select, or additional arguments.
+        :param tab: Target browser tab index (e.g. 0, 1, 2) or -1 for active tab.
+        :return: Result of the browser action.
+        """
         try:
             script_path = os.path.expanduser("~/.agents/skills/agentic-browser/scripts/agent.js")
-            cmd = ["node", script_path, action]
+            if not os.path.exists(script_path):
+                alt_path = os.path.expanduser("~/PythonProjects/workplace-setup/agentic-browser/scripts/agent.js")
+                if os.path.exists(alt_path):
+                    script_path = alt_path
+
+            cmd = ["node", script_path]
+            if tab is not None and int(tab) >= 0:
+                cmd.append(f"--tab={int(tab)}")
+
+            act = action.strip().lower().replace("_", "-")
+            cmd.append(act)
+
             if target:
-                cmd.append(target)
+                cmd.append(str(target))
             if value:
-                cmd.append(value)
+                cmd.append(str(value))
 
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=30
+                timeout=60
             )
             output = result.stdout
             if result.stderr:
-                output = output + chr(10) + result.stderr
+                output = output + (chr(10) if output else "") + result.stderr
             if output and output.strip():
-                return output
+                return output.strip()
             return "Browser action completed with no output."
         except Exception as e:
-            return str(e)
+            return f"Error executing browser action: {str(e)}"
 '''
 
 browser_specs = [{
     "name": "agentic_browser",
-    "description": "Interact with the browser autonomously using semantic mapping.",
+    "description": "Interact with the browser autonomously using semantic mapping, step-fill input, and navigation.",
     "parameters": {
         "type": "object",
         "properties": {
             "action": {
                 "type": "string",
-                "description": "Action to perform: map, click, input, goto, screenshot"
+                "description": "Action to perform: 'map', 'click', 'input' (step-fill by default), 'step_fill', 'goto', 'screenshot', 'scroll', 'select_option', 'upload', 'errors', 'eval', 'tabs', 'wait', 'text', 'reset_viewport'."
             },
             "target": {
                 "type": "string",
-                "description": "Target element text, placeholder, or URL"
+                "description": "Target element text, placeholder, selector, URL, direction ('down'/'up'/'bottom'/'top'), or code."
             },
             "value": {
                 "type": "string",
-                "description": "Text value to enter for input action"
+                "description": "Value to type/input, option to select, or additional arguments."
+            },
+            "tab": {
+                "type": "integer",
+                "description": "Target browser tab index (e.g. 0, 1, 2) or -1 for active tab."
             }
         },
         "required": ["action"]
