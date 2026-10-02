@@ -280,6 +280,9 @@ start_openwebui_background() {
                 export PORT="$webui_port"
                 export WEBUI_HOST="127.0.0.1"
                 export WEBUI_PORT="$webui_port"
+                export USE_SLIM=true
+                export USE_SLIM_DOCKER=true
+                export FRONTEND_BUILD_DIR="$webui_dir/build"
                 nohup "$webui_bin" serve --host 127.0.0.1 --port "$webui_port" > "$stack_dir/open-webui.log" 2>&1 &
             )
             started=1

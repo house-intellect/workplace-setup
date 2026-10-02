@@ -206,6 +206,9 @@ echo "=================================================="
 # 1. Clear conflicting proxy environment variables
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
 export HF_HUB_OFFLINE=1
+export USE_SLIM=true
+export USE_SLIM_DOCKER=true
+export FRONTEND_BUILD_DIR="$INSTALL_DIR/open-webui/build"
 
 # 2. Check and start Gemini-FastAPI server
 FASTAPI_HEALTHY=0
