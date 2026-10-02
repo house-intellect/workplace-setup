@@ -243,6 +243,7 @@ start_openwebui_background() {
         return 0
     fi
 
+    mkdir -p "$webui_dir/backend/data" "$webui_dir/data"
     echo "Starting Open WebUI service on http://127.0.0.1:$webui_port..."
 
     local started=0
