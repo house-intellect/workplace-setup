@@ -361,28 +361,9 @@ else
     "$PY_CMD" -m venv "$VENV_DIR"
 fi
 
-# 2.5 Ensure Open WebUI and server dependencies are installed in $VENV_DIR
-PYTHON_EXEC="$VENV_DIR/bin/python"
-PIP_EXEC="$VENV_DIR/bin/pip"
-
-CHECK_WEBUI_DEPS="import fastapi, uvicorn, pydantic, sqlalchemy, aiosqlite, alembic; from open_webui import app"
-if ! "$PYTHON_EXEC" -c "$CHECK_WEBUI_DEPS" 2>/dev/null; then
-    echo "Configuring Open WebUI dependencies in $VENV_DIR..."
-    "$PIP_EXEC" install --upgrade pip 2>/dev/null || true
-    if ! "$PIP_EXEC" install open-webui 2>/dev/null; then
-        echo "Direct pip install open-webui unavailable or failed; installing dependencies from repo requirements..."
-        if [ -f "$TARGET_DIR/backend/requirements-slim.txt" ]; then
-            "$PIP_EXEC" install -r "$TARGET_DIR/backend/requirements-slim.txt" || true
-        elif [ -f "$TARGET_DIR/backend/requirements.txt" ]; then
-            "$PIP_EXEC" install -r "$TARGET_DIR/backend/requirements.txt" || true
-        fi
-        "$PIP_EXEC" install fastapi uvicorn pydantic sqlalchemy aiosqlite alembic starlette-compress starsessions orjson requests httpx python-multipart typer 2>/dev/null || true
-    fi
-fi
-
-# Ensure executable launcher exists at $VENV_DIR/bin/open-webui
-if [ ! -x "$VENV_DIR/bin/open-webui" ]; then
-    cat << 'EOF_LAUNCHER' > "$VENV_DIR/bin/open-webui"
+# 2.5 Ensure executable launcher exists at $VENV_DIR/bin/open-webui
+mkdir -p "$VENV_DIR/bin"
+cat << 'EOF_LAUNCHER' > "$VENV_DIR/bin/open-webui"
 #!/bin/sh
 '''exec' "$(dirname "$0")/python" "$0" "$@"
 ' '''
@@ -401,6 +382,14 @@ for c in candidates:
     if os.path.isdir(c) and c not in sys.path:
         sys.path.insert(0, c)
 
+for sp in [
+    os.path.expanduser("~/local-ai-stack/tool-calling-test/.venv/lib/python3.11/site-packages"),
+    os.path.expanduser("~/local-ai-stack/tool-calling-test/.venv/lib/python3.10/site-packages"),
+    os.path.expanduser("~/local-ai-stack/tool-calling-test/.venv/lib/python3.12/site-packages"),
+]:
+    if os.path.isdir(sp) and sp not in sys.path:
+        sys.path.append(sp)
+
 if "FRONTEND_BUILD_DIR" not in os.environ:
     build_dir = os.path.join(webui_dir, "build")
     if os.path.isdir(build_dir):
@@ -412,9 +401,8 @@ if __name__ == '__main__':
     sys.argv[0] = sys.argv[0].removesuffix('.exe')
     sys.exit(app())
 EOF_LAUNCHER
-    chmod +x "$VENV_DIR/bin/open-webui"
-    echo "✓ Created Open WebUI launcher: $VENV_DIR/bin/open-webui"
-fi
+chmod +x "$VENV_DIR/bin/open-webui"
+echo "✓ Configured Open WebUI launcher: $VENV_DIR/bin/open-webui"
 
 # 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.bezmezhau.com) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
