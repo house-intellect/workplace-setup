@@ -448,17 +448,12 @@ case "$MODE" in
         deploy_skills
         echo ""
 
-        # Step 3: Run Smolagent & Gemini-FastAPI Setup
-        echo "--- [1/2] Installing / Syncing Smolagent CLI & Gemini-FastAPI ---"
-        bash "$SCRIPT_DIR/setup_and_run_smolagent.sh"
-        echo ""
-
-        # Step 4: Run Open WebUI Setup & SQLite Tool Injection
-        echo "--- [2/2] Installing / Syncing Open WebUI & SQLite Tools ---"
+        # Step 3: Run Open WebUI Setup & SQLite Tool Injection
+        echo "--- [1/3] Installing / Syncing Open WebUI & SQLite Tools ---"
         bash "$SCRIPT_DIR/install_openwebui_tools.sh" "$OPENWEBUI_DIR"
         echo ""
 
-        # Step 5: Ensure start-ai-stack.sh and agent.sh are synced to stack directory
+        # Step 4: Ensure start-ai-stack.sh and agent.sh are synced to stack directory
         mkdir -p "$STACK_DIR"
         if [ -f "$SCRIPT_DIR/start-ai-stack.sh" ]; then
             cp -f "$SCRIPT_DIR/start-ai-stack.sh" "$STACK_DIR/start-ai-stack.sh"
@@ -471,7 +466,12 @@ case "$MODE" in
             chmod +x "$HOME/agent.sh" 2>/dev/null || true
         fi
 
-        # Step 6: Start Open WebUI & Local AI Stack
+        # Step 5: Run Smolagent & Gemini-FastAPI Setup
+        echo "--- [2/3] Installing / Syncing Smolagent CLI & Gemini-FastAPI ---"
+        bash "$SCRIPT_DIR/setup_and_run_smolagent.sh"
+        echo ""
+
+        # Step 6: Start/Verify Open WebUI Stack
         echo "--- [3/3] Starting Open WebUI Stack (Port 8080) ---"
         start_openwebui_background
         echo ""

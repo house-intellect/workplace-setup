@@ -2039,7 +2039,7 @@ chmod +x "$HOME/agent.sh"
 # Ensure Open WebUI is started if available
 if [ -d "$STACK_DIR/open-webui" ] || [ -d "$SCRIPT_DIR/open-webui" ] || (command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service) || command -v open-webui >/dev/null 2>&1; then
     echo "Starting Open WebUI service on http://127.0.0.1:8080..."
-    local started=0
+    started=0
     if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service; then
         echo "   -> Starting via systemd user service (open-webui.service)..."
         systemctl --user start open-webui.service 2>/dev/null || true
