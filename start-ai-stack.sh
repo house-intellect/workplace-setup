@@ -350,6 +350,7 @@ export PORT="$WEBUI_PORT"
 export WEBUI_HOST="127.0.0.1"
 export WEBUI_PORT="$WEBUI_PORT"
 cd "$INSTALL_DIR/open-webui"
+mkdir -p "$INSTALL_DIR/open-webui/backend/data" "$INSTALL_DIR/open-webui/data"
 if [ -x ".venv/bin/open-webui" ]; then
     exec .venv/bin/open-webui serve --host 127.0.0.1 --port "$WEBUI_PORT"
 elif [ -x "$INSTALL_DIR/open-webui/.venv/bin/open-webui" ]; then
