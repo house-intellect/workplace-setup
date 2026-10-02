@@ -365,7 +365,8 @@ fi
 CHECK_WEBUI_DEPS="import typer, aiohttp, sqlalchemy, aiosqlite, alembic, starlette_compress, starsessions, redis, mcp, google_re2, asgiref, ldap3"
 if ! "$VENV_DIR/bin/python" -c "$CHECK_WEBUI_DEPS" 2>/dev/null; then
     echo "Installing required lightweight Open WebUI dependencies into $VENV_DIR..."
-    "$VENV_DIR/bin/pip" install --no-cache-dir \
+    "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
+    "$VENV_DIR/bin/pip" install --retries 5 \
         typer==0.25.1 aiohttp==3.13.5 sqlalchemy==2.0.50 aiosqlite==0.22.1 alembic==1.18.4 \
         argon2-cffi==25.1.0 authlib==1.7.2 bcrypt==5.0.0 brotli==1.2.0 itsdangerous==2.2.0 \
         joserfc==1.7.4 "pyjwt[crypto]==2.13.0" python-socketio==5.16.2 starlette-compress==1.7.1 \
@@ -373,12 +374,29 @@ if ! "$VENV_DIR/bin/python" -c "$CHECK_WEBUI_DEPS" 2>/dev/null; then
         async-timeout==5.0.1 pycrdt python-dateutil pytz fake-useragent ftfy chardet \
         Markdown beautifulsoup4 lxml validators psutil rank-bm25 python-mimeparse python-multipart \
         aiodns==3.6.1 hiredis==3.4.0 langchain-core langchain-text-splitters langchain-classic \
-        black tiktoken pillow "mcp==1.27.2" google-re2 asgiref azure-identity ldap3==2.9.1 2>/dev/null || true
+        black tiktoken pillow "mcp==1.27.2" google-re2 asgiref azure-identity ldap3==2.9.1
 fi
 
-# 2.5 Ensure data directories and executable launcher exist
+# 2.5 Ensure data directories, standard package metadata, and executable launcher exist
 mkdir -p "$TARGET_DIR/backend/data" "$TARGET_DIR/data"
 mkdir -p "$VENV_DIR/bin"
+
+# Standard Python distribution metadata for unbundled Open WebUI source
+WEBUI_VERSION="0.11.4"
+if [ -f "$TARGET_DIR/package.json" ]; then
+    V_PARSED=$(grep '"version"' "$TARGET_DIR/package.json" | head -n1 | sed -E 's/.*"version": "([^"]+)".*/\1/')
+    [ -n "$V_PARSED" ] && WEBUI_VERSION="$V_PARSED"
+fi
+for sp in "$VENV_DIR"/lib/python*/site-packages; do
+    if [ -d "$sp" ]; then
+        mkdir -p "$sp/open_webui-${WEBUI_VERSION}.dist-info"
+        cat << EOF_META > "$sp/open_webui-${WEBUI_VERSION}.dist-info/METADATA"
+Metadata-Version: 2.1
+Name: open-webui
+Version: ${WEBUI_VERSION}
+EOF_META
+    fi
+done
 cat << 'EOF_LAUNCHER' > "$VENV_DIR/bin/open-webui"
 #!/bin/sh
 '''exec' "$(dirname "$0")/python" "$0" "$@"
@@ -1033,38 +1051,7 @@ for sp in sorted(sp_dirs):
                 )
                 p.write_text(txt)
 
-    # Patch open_webui to bind strictly to localhost (127.0.0.1) instead of 0.0.0.0
-    for webui_init in [Path(sp) / "open_webui" / "__init__.py"]:
-        if webui_init.exists():
-            wtxt = webui_init.read_text()
-            if "host: str = '0.0.0.0'" in wtxt:
-                wtxt = wtxt.replace("host: str = '0.0.0.0'", "host: str = '127.0.0.1'")
-                webui_init.write_text(wtxt)
 
-    # Patch open_webui env.py for USE_SLIM and version metadata fallback
-    for env_file in [
-        Path(sp) / "open_webui" / "env.py",
-        Path("'"$TARGET_DIR"'") / "backend" / "open_webui" / "env.py",
-        Path("'"$TARGET_DIR"'") / "open_webui" / "env.py",
-    ]:
-        if env_file.exists():
-            etxt = env_file.read_text()
-            if "USE_SLIM = os.getenv('USE_SLIM_DOCKER', 'False')" in etxt:
-                etxt = etxt.replace(
-                    "USE_SLIM = os.getenv('USE_SLIM_DOCKER', 'False').lower() == 'true'",
-                    "USE_SLIM = os.getenv('USE_SLIM_DOCKER', os.getenv('USE_SLIM', 'True')).lower() == 'true'"
-                )
-            if "PACKAGE_DATA = {'version': importlib.metadata.version('open-webui')}" in etxt and "except Exception:" not in etxt:
-                old_pkg = "PACKAGE_DATA = {'version': importlib.metadata.version('open-webui')}"
-                new_pkg = """try:
-        PACKAGE_DATA = {'version': importlib.metadata.version('open-webui')}
-    except Exception:
-        try:
-            PACKAGE_DATA = json.loads((BASE_DIR / 'package.json').read_text())
-        except Exception:
-            PACKAGE_DATA = {'version': '0.11.0'}"""
-                etxt = etxt.replace(old_pkg, new_pkg)
-            env_file.write_text(etxt)
 
     # Patch gemini_webapi/__init__.py for global BaseSession DoH
     init_file = Path(f"{sp}/gemini_webapi/__init__.py")
