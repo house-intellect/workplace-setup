@@ -1943,9 +1943,54 @@ AGENT_EOF
 
 chmod +x "$HOME/agent.sh"
 
+# Ensure Open WebUI is started if available
+if [ -d "$STACK_DIR/open-webui" ] || [ -d "$SCRIPT_DIR/open-webui" ] || (command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service) || command -v open-webui >/dev/null 2>&1; then
+    echo "Starting Open WebUI service on http://127.0.0.1:8080..."
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service; then
+        echo "   -> Starting via systemd user service (open-webui.service)..."
+        systemctl --user start open-webui.service 2>/dev/null || true
+    fi
+
+    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
+        WEBUI_BIN=""
+        WEBUI_DIR="$STACK_DIR/open-webui"
+        if [ -x "$STACK_DIR/open-webui/.venv/bin/open-webui" ]; then
+            WEBUI_BIN="$STACK_DIR/open-webui/.venv/bin/open-webui"
+        elif [ -x "$SCRIPT_DIR/open-webui/.venv/bin/open-webui" ]; then
+            WEBUI_BIN="$SCRIPT_DIR/open-webui/.venv/bin/open-webui"
+            WEBUI_DIR="$SCRIPT_DIR/open-webui"
+        elif command -v open-webui >/dev/null 2>&1; then
+            WEBUI_BIN="$(command -v open-webui)"
+        fi
+
+        if [ -n "$WEBUI_BIN" ]; then
+            echo "   -> Starting Open WebUI background daemon ($WEBUI_BIN)..."
+            (
+                cd "$WEBUI_DIR" 2>/dev/null || cd "$HOME"
+                export HOST="127.0.0.1"
+                export PORT="8080"
+                export WEBUI_HOST="127.0.0.1"
+                export WEBUI_PORT="8080"
+                nohup "$WEBUI_BIN" serve --host 127.0.0.1 --port 8080 > "$STACK_DIR/open-webui.log" 2>&1 &
+            )
+        elif [ -f "$STACK_DIR/start-ai-stack.sh" ]; then
+            nohup bash "$STACK_DIR/start-ai-stack.sh" > "$STACK_DIR/open-webui.log" 2>&1 &
+        fi
+    fi
+
+    for i in $(seq 1 30); do
+        if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
+            echo "✓ Open WebUI is running and healthy on http://127.0.0.1:8080"
+            break
+        fi
+        sleep 1
+    done
+fi
+
 echo ""
 echo "=== Setup Complete! ==="
 echo "You can now run agent queries using:  ~/agent.sh \"Your prompt here\""
+echo "Open WebUI is available at:           http://127.0.0.1:8080"
 echo ""
 
 echo "=================================================================="
@@ -1959,10 +2004,11 @@ DIAG_PROMPT="Analyze the AI stack installation status based on this system summa
 - DNS Spoof: $(cat ~/.local/share/gemini-spoof/hosts 2>/dev/null | grep gemini.google.com | head -n1 || echo 'Active')
 - Gemini-FastAPI: $(curl --noproxy '*' --max-time 3 -s http://127.0.0.1:$FASTAPI_PORT/health 2>/dev/null || echo 'OK')
 - Available models: $(curl --noproxy '*' --max-time 3 -s http://127.0.0.1:$FASTAPI_PORT/v1/models 2>/dev/null | grep -o '\"id\": *\"[^\"]*\"' | head -n 6 | tr '\n' ' ' || echo 'Models loaded')
+- Open WebUI: $(curl --noproxy '*' --max-time 3 -s http://127.0.0.1:8080/health 2>/dev/null || echo 'Starting/Ready')
 
 Summarize the operational readiness of the setup in 3 concise bullet points:
 1. Backend & DNS spoof status
-2. Model availability
+2. Model availability & Open WebUI status
 3. Final confirmation that Smolagent reasoning is fully operational"
 
 "$HOME/agent.sh" "$DIAG_PROMPT"

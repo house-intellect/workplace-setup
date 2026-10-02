@@ -1504,4 +1504,31 @@ if [ -f "$SCRIPT_DIR/start-ai-stack.sh" ] && [ -d "$HOME/local-ai-stack" ]; then
     chmod +x "$HOME/local-ai-stack/start-ai-stack.sh"
 fi
 
+# 6. Ensure systemd user service exists if systemctl is available
+if command -v systemctl >/dev/null 2>&1; then
+    SERVICE_DIR="$HOME/.config/systemd/user"
+    mkdir -p "$SERVICE_DIR"
+    if [ ! -f "$SERVICE_DIR/open-webui.service" ]; then
+        cat << EOF_SRV > "$SERVICE_DIR/open-webui.service"
+[Unit]
+Description=Open WebUI and Local AI Stack
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=$HOME/local-ai-stack
+ExecStart=/bin/sh $HOME/local-ai-stack/start-ai-stack.sh
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
+EOF_SRV
+        systemctl --user daemon-reload 2>/dev/null || true
+        echo "✓ Configured systemd user service: $SERVICE_DIR/open-webui.service"
+    fi
+fi
+
 echo "Open WebUI installation and tool sync complete!"

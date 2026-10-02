@@ -18,7 +18,7 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 mkdir -p "$WORK_DIR/workplace-setup"
 
 echo "[1/3] Copying workplace-setup scripts and skills..."
-rsync -a --exclude=".git" --exclude="__pycache__" --exclude="*.pyc" \
+rsync -a --exclude=".git" --exclude="__pycache__" --exclude="*.pyc" --exclude=".venv" --exclude="open-webui" \
     "$SCRIPT_DIR/" "$WORK_DIR/workplace-setup/"
 
 if [ -d "$STACK_DIR/gemini-fastapi" ]; then

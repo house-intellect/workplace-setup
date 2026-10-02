@@ -161,6 +161,78 @@ deploy_skills() {
     fi
 }
 
+start_openwebui_background() {
+    local stack_dir="${LOCAL_AI_STACK_DIR:-$HOME/local-ai-stack}"
+    local webui_dir="${OPENWEBUI_DIR:-$stack_dir/open-webui}"
+    local webui_port="${WEBUI_PORT:-8080}"
+
+    if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$webui_port/health" >/dev/null 2>&1; then
+        echo "✓ Open WebUI is already running and healthy on http://127.0.0.1:$webui_port"
+        return 0
+    fi
+
+    echo "Starting Open WebUI service on http://127.0.0.1:$webui_port..."
+
+    local started=0
+
+    # 1. Start via systemd user service if available
+    if command -v systemctl >/dev/null 2>&1; then
+        if systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service; then
+            echo "   -> Starting via systemd user service (open-webui.service)..."
+            systemctl --user start open-webui.service 2>/dev/null || true
+            started=1
+        fi
+    fi
+
+    # 2. If systemd not available or didn't start port within 3s, launch via background process
+    if [ $started -eq 0 ] || ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$webui_port/health" >/dev/null 2>&1; then
+        local webui_bin=""
+        if [ -x "$webui_dir/.venv/bin/open-webui" ]; then
+            webui_bin="$webui_dir/.venv/bin/open-webui"
+        elif [ -x "$SCRIPT_DIR/open-webui/.venv/bin/open-webui" ]; then
+            webui_bin="$SCRIPT_DIR/open-webui/.venv/bin/open-webui"
+            webui_dir="$SCRIPT_DIR/open-webui"
+        elif command -v open-webui >/dev/null 2>&1; then
+            webui_bin="$(command -v open-webui)"
+        fi
+
+        if [ -n "$webui_bin" ]; then
+            echo "   -> Starting Open WebUI background daemon ($webui_bin)..."
+            mkdir -p "$stack_dir"
+            (
+                cd "$webui_dir" 2>/dev/null || cd "$HOME"
+                export HOST="127.0.0.1"
+                export PORT="$webui_port"
+                export WEBUI_HOST="127.0.0.1"
+                export WEBUI_PORT="$webui_port"
+                nohup "$webui_bin" serve --host 127.0.0.1 --port "$webui_port" > "$stack_dir/open-webui.log" 2>&1 &
+            )
+            started=1
+        elif [ -f "$stack_dir/start-ai-stack.sh" ]; then
+            echo "   -> Starting via $stack_dir/start-ai-stack.sh in background..."
+            nohup bash "$stack_dir/start-ai-stack.sh" > "$stack_dir/open-webui.log" 2>&1 &
+            started=1
+        fi
+    fi
+
+    # 3. Wait for Open WebUI health check (up to 40s)
+    echo "   -> Waiting for Open WebUI to become ready on http://127.0.0.1:$webui_port..."
+    local ready=0
+    for i in $(seq 1 40); do
+        if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$webui_port/health" >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ $ready -eq 1 ]; then
+        echo "✓ Open WebUI is running and healthy at http://127.0.0.1:$webui_port"
+    else
+        echo "⚠️  Open WebUI launched in background; still initializing (check $stack_dir/open-webui.log or systemctl --user status open-webui)"
+    fi
+}
+
 show_status() {
     echo "=================================================="
     echo "              AI Stack Service Status             "
@@ -316,21 +388,25 @@ case "$MODE" in
             chmod +x "$HOME/agent.sh" 2>/dev/null || true
         fi
 
+        # Step 6: Start Open WebUI & Local AI Stack
+        echo "--- [3/3] Starting Open WebUI Stack (Port 8080) ---"
+        start_openwebui_background
+        echo ""
+
         echo "=================================================================="
-        echo "🎉 Unified Installation Complete!"
+        echo "🎉 Unified Installation Complete & Stack Running!"
         echo "=================================================================="
-        echo "✓ Gemini-FastAPI: Throttled to 1 req / 2s to protect quotas."
+        echo "✓ Gemini-FastAPI: Running on port 8000 (1 req / 2s rate limit)."
+        echo "✓ Open WebUI:      Running on http://127.0.0.1:8080 (Tools registered)."
         echo "✓ Smolagent CLI:   Installed with thinking display & rate limits."
-        echo "✓ Open WebUI:      Tools registered & 4x parallel tasks disabled."
         echo "✓ Agentic Skills:  agentic-browser & quizmaster deployed."
         echo ""
-        echo "Quick Commands:"
-        echo "  • Start the full stack:   ./install-bundle.sh start"
-        echo "                            (or: ~/local-ai-stack/start-ai-stack.sh)"
-        echo "  • Smolagent query:        ~/agent.sh \"Your prompt here\""
-        echo "  • Open WebUI access:      http://127.0.0.1:8080"
-        echo "  • Check service health:   ./install-bundle.sh status"
-        echo "  • Stop services:          ./install-bundle.sh stop"
+        echo "Quick Access & Commands:"
+        echo "  • Open WebUI Web Interface: http://127.0.0.1:8080"
+        echo "  • Smolagent query:          ~/agent.sh \"Your prompt here\""
+        echo "  • Check service health:     ./install-bundle.sh status"
+        echo "  • Restart stack:            ./install-bundle.sh restart"
+        echo "  • Stop services:            ./install-bundle.sh stop"
         echo "=================================================================="
         ;;
     *)
