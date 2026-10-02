@@ -99,7 +99,7 @@ stop_running_stack() {
 
     # 2. Check known stack processes by pattern
     local pattern_pids
-    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui serve" 2>/dev/null || true)
+    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui.*serve|open_webui" 2>/dev/null || true)
     if [ -n "$pattern_pids" ]; then
         for pid in $pattern_pids; do
             case " $announced_pids " in
@@ -146,7 +146,7 @@ stop_running_stack() {
 
     # 4. Terminate with SIGTERM
     pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -TERM -f "open-webui serve" 2>/dev/null || true
+    pkill -TERM -f "open-webui.*serve" 2>/dev/null || true
     pkill -TERM -f "open_webui" 2>/dev/null || true
 
     for port in "${ports[@]}"; do
@@ -164,7 +164,7 @@ stop_running_stack() {
 
     local wait_count=0
     while [ $wait_count -lt 5 ]; do
-        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui.*serve" >/dev/null 2>&1 || pgrep -f "open_webui" >/dev/null 2>&1; then
             sleep 1
             wait_count=$((wait_count + 1))
         else
@@ -186,7 +186,7 @@ stop_running_stack() {
         fi
     done
     pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -9 -f "open-webui serve" 2>/dev/null || true
+    pkill -9 -f "open-webui.*serve" 2>/dev/null || true
     pkill -9 -f "open_webui" 2>/dev/null || true
     rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
     echo "✓ Conflicting processes terminated. Ports $FASTAPI_PORT and $WEBUI_PORT are now free."
@@ -347,13 +347,27 @@ export PORT="$WEBUI_PORT"
 export WEBUI_HOST="127.0.0.1"
 export WEBUI_PORT="$WEBUI_PORT"
 cd "$INSTALL_DIR/open-webui"
-if [ -f ".venv/bin/open-webui" ]; then
+if [ -x ".venv/bin/open-webui" ]; then
     exec .venv/bin/open-webui serve --host 127.0.0.1 --port "$WEBUI_PORT"
-elif [ -f "$INSTALL_DIR/open-webui/.venv/bin/open-webui" ]; then
+elif [ -x "$INSTALL_DIR/open-webui/.venv/bin/open-webui" ]; then
     exec "$INSTALL_DIR/open-webui/.venv/bin/open-webui" serve --host 127.0.0.1 --port "$WEBUI_PORT"
+elif command -v open-webui >/dev/null 2>&1; then
+    exec "$(command -v open-webui)" serve --host 127.0.0.1 --port "$WEBUI_PORT"
 else
+    PY=""
+    if [ -x ".venv/bin/python" ]; then
+        PY=".venv/bin/python"
+    elif [ -x "$INSTALL_DIR/open-webui/.venv/bin/python" ]; then
+        PY="$INSTALL_DIR/open-webui/.venv/bin/python"
+    elif [ -x "$INSTALL_DIR/tool-calling-test/.venv/bin/python" ]; then
+        PY="$INSTALL_DIR/tool-calling-test/.venv/bin/python"
+    else
+        PY="$(command -v python3 || command -v python)"
+    fi
+    export PYTHONPATH="$INSTALL_DIR/open-webui/backend:$PYTHONPATH"
     if [ -f ".venv/bin/activate" ]; then
         . .venv/bin/activate
     fi
-    exec open-webui serve --host 127.0.0.1 --port "$WEBUI_PORT"
+    exec "$PY" -c "import sys; from open_webui import app; sys.argv=['open-webui', 'serve', '--host', '127.0.0.1', '--port', '$WEBUI_PORT']; sys.exit(app())"
 fi
+

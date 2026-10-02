@@ -118,7 +118,7 @@ stop_running_stack() {
 
     # 2. Check known stack processes by pattern
     local pattern_pids
-    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui serve" 2>/dev/null || true)
+    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui.*serve|open_webui" 2>/dev/null || true)
     if [ -n "$pattern_pids" ]; then
         for pid in $pattern_pids; do
             case " $announced_pids " in
@@ -165,7 +165,7 @@ stop_running_stack() {
 
     # 4. Terminate with SIGTERM
     pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -TERM -f "open-webui serve" 2>/dev/null || true
+    pkill -TERM -f "open-webui.*serve" 2>/dev/null || true
     pkill -TERM -f "open_webui" 2>/dev/null || true
 
     for port in "${ports[@]}"; do
@@ -183,7 +183,7 @@ stop_running_stack() {
 
     local wait_count=0
     while [ $wait_count -lt 5 ]; do
-        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui.*serve" >/dev/null 2>&1 || pgrep -f "open_webui" >/dev/null 2>&1; then
             sleep 1
             wait_count=$((wait_count + 1))
         else
@@ -205,7 +205,7 @@ stop_running_stack() {
         fi
     done
     pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -9 -f "open-webui serve" 2>/dev/null || true
+    pkill -9 -f "open-webui.*serve" 2>/dev/null || true
     pkill -9 -f "open_webui" 2>/dev/null || true
     rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
     echo "✓ Conflicting processes terminated. Ports $FASTAPI_PORT and $WEBUI_PORT are now free."
@@ -252,12 +252,15 @@ start_openwebui_background() {
         if systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service; then
             echo "   -> Starting via systemd user service (open-webui.service)..."
             systemctl --user start open-webui.service 2>/dev/null || true
-            started=1
+            sleep 2
+            if systemctl --user is-active open-webui.service >/dev/null 2>&1; then
+                started=1
+            fi
         fi
     fi
 
-    # 2. If systemd not available or didn't start port within 3s, launch via background process
-    if [ $started -eq 0 ] || ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$webui_port/health" >/dev/null 2>&1; then
+    # 2. If systemd not available or failed to start, launch via background process
+    if [ $started -eq 0 ]; then
         local webui_bin=""
         if [ -x "$webui_dir/.venv/bin/open-webui" ]; then
             webui_bin="$webui_dir/.venv/bin/open-webui"
@@ -333,8 +336,16 @@ show_status() {
     fi
 
     # 2. Open WebUI Status
-    local webui_pid
-    webui_pid=$(pgrep -f "open-webui serve" || true)
+    local webui_pid=""
+    if command -v lsof >/dev/null 2>&1; then
+        webui_pid=$(lsof -ti:"$WEBUI_PORT" 2>/dev/null | head -n1 || true)
+    fi
+    if [ -z "$webui_pid" ] && command -v fuser >/dev/null 2>&1; then
+        webui_pid=$(fuser "$WEBUI_PORT/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -v '^$' | head -n1 || true)
+    fi
+    if [ -z "$webui_pid" ]; then
+        webui_pid=$(pgrep -f "open-webui.*serve|open_webui" | head -n1 || true)
+    fi
     if [ -n "$webui_pid" ]; then
         echo "● Open WebUI:    RUNNING (PID: $webui_pid)"
         if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$WEBUI_PORT/health" >/dev/null 2>&1; then

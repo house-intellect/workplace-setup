@@ -114,7 +114,7 @@ stop_running_stack() {
 
     # 2. Check known stack processes by pattern
     local pattern_pids
-    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui serve" 2>/dev/null || true)
+    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui.*serve|open_webui" 2>/dev/null || true)
     if [ -n "$pattern_pids" ]; then
         for pid in $pattern_pids; do
             case " $announced_pids " in
@@ -161,7 +161,7 @@ stop_running_stack() {
 
     # 4. Terminate with SIGTERM
     pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -TERM -f "open-webui serve" 2>/dev/null || true
+    pkill -TERM -f "open-webui.*serve" 2>/dev/null || true
     pkill -TERM -f "open_webui" 2>/dev/null || true
 
     for port in "${ports[@]}"; do
@@ -179,7 +179,7 @@ stop_running_stack() {
 
     local wait_count=0
     while [ $wait_count -lt 5 ]; do
-        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui.*serve" >/dev/null 2>&1 || pgrep -f "open_webui" >/dev/null 2>&1; then
             sleep 1
             wait_count=$((wait_count + 1))
         else
@@ -201,7 +201,7 @@ stop_running_stack() {
         fi
     done
     pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
-    pkill -9 -f "open-webui serve" 2>/dev/null || true
+    pkill -9 -f "open-webui.*serve" 2>/dev/null || true
     pkill -9 -f "open_webui" 2>/dev/null || true
     rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
     echo "✓ Conflicting processes terminated. Ports 8000 and 8080 are now free."
@@ -2039,12 +2039,17 @@ chmod +x "$HOME/agent.sh"
 # Ensure Open WebUI is started if available
 if [ -d "$STACK_DIR/open-webui" ] || [ -d "$SCRIPT_DIR/open-webui" ] || (command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service) || command -v open-webui >/dev/null 2>&1; then
     echo "Starting Open WebUI service on http://127.0.0.1:8080..."
+    local started=0
     if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service; then
         echo "   -> Starting via systemd user service (open-webui.service)..."
         systemctl --user start open-webui.service 2>/dev/null || true
+        sleep 2
+        if systemctl --user is-active open-webui.service >/dev/null 2>&1; then
+            started=1
+        fi
     fi
 
-    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
+    if [ $started -eq 0 ] && ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
         WEBUI_BIN=""
         WEBUI_DIR="$STACK_DIR/open-webui"
         if [ -x "$STACK_DIR/open-webui/.venv/bin/open-webui" ]; then
