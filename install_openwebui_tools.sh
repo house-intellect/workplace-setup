@@ -406,6 +406,8 @@ import os
 
 os.environ.setdefault("USE_SLIM", "true")
 os.environ.setdefault("USE_SLIM_DOCKER", "true")
+os.environ.setdefault("HOST", "127.0.0.1")
+os.environ.setdefault("WEBUI_HOST", "127.0.0.1")
 
 bin_dir = os.path.dirname(os.path.abspath(__file__))
 venv_dir = os.path.dirname(bin_dir)
@@ -436,6 +438,9 @@ from open_webui import app
 
 if __name__ == '__main__':
     sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    if len(sys.argv) > 1 and sys.argv[1] in ('serve', 'dev'):
+        if '--host' not in sys.argv:
+            sys.argv.extend(['--host', '127.0.0.1'])
     sys.exit(app())
 EOF_LAUNCHER
 chmod +x "$VENV_DIR/bin/open-webui"
@@ -1052,6 +1057,14 @@ for sp in sorted(sp_dirs):
                 p.write_text(txt)
 
 
+
+    # Ensure open_webui binds strictly to localhost (127.0.0.1) instead of 0.0.0.0
+    for webui_init in [Path(sp) / "open_webui" / "__init__.py", Path("'"$TARGET_DIR"'") / "backend" / "open_webui" / "__init__.py"]:
+        if webui_init.exists():
+            wtxt = webui_init.read_text()
+            if "host: str = '0.0.0.0'" in wtxt:
+                wtxt = wtxt.replace("host: str = '0.0.0.0'", "host: str = '127.0.0.1'")
+                webui_init.write_text(wtxt)
 
     # Patch gemini_webapi/__init__.py for global BaseSession DoH
     init_file = Path(f"{sp}/gemini_webapi/__init__.py")
