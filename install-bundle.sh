@@ -293,10 +293,10 @@ start_openwebui_background() {
         fi
     fi
 
-    # 3. Wait for Open WebUI health check (up to 40s)
+    # 3. Wait for Open WebUI health check (up to 75s)
     echo "   -> Waiting for Open WebUI to become ready on http://127.0.0.1:$webui_port..."
     local ready=0
-    for i in $(seq 1 40); do
+    for i in $(seq 1 75); do
         if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$webui_port/health" >/dev/null 2>&1; then
             ready=1
             break
@@ -471,7 +471,7 @@ case "$MODE" in
 
         # Step 5: Run Smolagent & Gemini-FastAPI Setup
         echo "--- [2/3] Installing / Syncing Smolagent CLI & Gemini-FastAPI ---"
-        bash "$SCRIPT_DIR/setup_and_run_smolagent.sh"
+        SKIP_WEBUI_START=1 bash "$SCRIPT_DIR/setup_and_run_smolagent.sh"
         echo ""
 
         # Step 6: Start/Verify Open WebUI Stack

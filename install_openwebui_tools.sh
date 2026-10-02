@@ -362,7 +362,7 @@ else
 fi
 
 # 2.4 Verify & install lightweight Open WebUI dependencies without PyPI backtracking
-CHECK_WEBUI_DEPS="import typer, aiohttp, sqlalchemy, aiosqlite, alembic, starlette_compress, starsessions, redis, mcp, google_re2, asgiref"
+CHECK_WEBUI_DEPS="import typer, aiohttp, sqlalchemy, aiosqlite, alembic, starlette_compress, starsessions, redis, mcp, google_re2, asgiref, ldap3"
 if ! "$VENV_DIR/bin/python" -c "$CHECK_WEBUI_DEPS" 2>/dev/null; then
     echo "Installing required lightweight Open WebUI dependencies into $VENV_DIR..."
     "$VENV_DIR/bin/pip" install --no-cache-dir \
@@ -373,7 +373,7 @@ if ! "$VENV_DIR/bin/python" -c "$CHECK_WEBUI_DEPS" 2>/dev/null; then
         async-timeout==5.0.1 pycrdt python-dateutil pytz fake-useragent ftfy chardet \
         Markdown beautifulsoup4 lxml validators psutil rank-bm25 python-mimeparse python-multipart \
         aiodns==3.6.1 hiredis==3.4.0 langchain-core langchain-text-splitters langchain-classic \
-        black tiktoken pillow "mcp==1.27.2" google-re2 asgiref azure-identity 2>/dev/null || true
+        black tiktoken pillow "mcp==1.27.2" google-re2 asgiref azure-identity ldap3==2.9.1 2>/dev/null || true
 fi
 
 # 2.5 Ensure executable launcher exists at $VENV_DIR/bin/open-webui
@@ -1063,7 +1063,36 @@ for sp in sorted(sp_dirs):
         except Exception:
             PACKAGE_DATA = {'version': '0.11.0'}"""
                 etxt = etxt.replace(old_pkg, new_pkg)
+            if "DATA_DIR = Path(os.getenv('DATA_DIR', BACKEND_DIR / 'data')).resolve()" in etxt:
+                if "DATA_DIR.mkdir(parents=True, exist_ok=True)" not in etxt:
+                    etxt = etxt.replace(
+                        "DATA_DIR = Path(os.getenv('DATA_DIR', BACKEND_DIR / 'data')).resolve()",
+                        "DATA_DIR = Path(os.getenv('DATA_DIR', BACKEND_DIR / 'data')).resolve()\nDATA_DIR.mkdir(parents=True, exist_ok=True)"
+                    )
             env_file.write_text(etxt)
+
+    # Patch open_webui routers/auths.py to make ldap3 optional
+    for auths_file in [
+        Path(sp) / "open_webui" / "routers" / "auths.py",
+        Path("'"$TARGET_DIR"'") / "backend" / "open_webui" / "routers" / "auths.py",
+        Path("'"$TARGET_DIR"'") / "open_webui" / "routers" / "auths.py",
+    ]:
+        if auths_file.exists():
+            atxt = auths_file.read_text()
+            if "from ldap3 import NONE" in atxt and "except ImportError:" not in atxt:
+                old_ldap = """from ldap3 import NONE, Connection, Server, Tls
+from ldap3.utils.conv import escape_filter_chars
+from ldap3.utils.dn import parse_dn"""
+                new_ldap = """try:
+    from ldap3 import NONE, Connection, Server, Tls
+    from ldap3.utils.conv import escape_filter_chars
+    from ldap3.utils.dn import parse_dn
+except ImportError:
+    NONE = Connection = Server = Tls = None
+    escape_filter_chars = lambda x: x
+    parse_dn = lambda x: []"""
+                atxt = atxt.replace(old_ldap, new_ldap)
+                auths_file.write_text(atxt)
 
     # Patch gemini_webapi/__init__.py for global BaseSession DoH
     init_file = Path(f"{sp}/gemini_webapi/__init__.py")
