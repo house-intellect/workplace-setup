@@ -188,7 +188,6 @@ stop_running_stack() {
     pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
     pkill -9 -f "open-webui.*serve" 2>/dev/null || true
     pkill -9 -f "open_webui" 2>/dev/null || true
-    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
     echo "✓ Conflicting processes terminated. Ports $FASTAPI_PORT and $WEBUI_PORT are now free."
 }
 

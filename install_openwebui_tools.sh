@@ -75,10 +75,16 @@ echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 
 stop_running_stack() {
     local ports=(8000 8080)
+    local preserve_fastapi=0
+    if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1; then
+        echo "✓ Gemini-FastAPI is already running and healthy on port 8000. Preserving active instance and rotated cookie sequence."
+        ports=(8080)
+        preserve_fastapi=1
+    fi
     local found_occupying=0
     local announced_pids=""
 
-    echo "Checking required stack ports (8000, 8080) and running instances..."
+    echo "Checking required stack ports (${ports[*]}) and running instances..."
 
     # 1. Check processes holding required ports
     for port in "${ports[@]}"; do
@@ -109,7 +115,11 @@ stop_running_stack() {
 
     # 2. Check known stack processes by pattern
     local pattern_pids
-    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui serve" 2>/dev/null || true)
+    if [ "$preserve_fastapi" -eq 1 ]; then
+        pattern_pids=$(pgrep -f "open-webui.*serve|open_webui" 2>/dev/null || true)
+    else
+        pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui.*serve|open_webui" 2>/dev/null || true)
+    fi
     if [ -n "$pattern_pids" ]; then
         for pid in $pattern_pids; do
             case " $announced_pids " in
@@ -150,12 +160,14 @@ stop_running_stack() {
     fi
 
     if [ "$found_occupying" -eq 0 ]; then
-        echo "✓ Required ports (8000, 8080) are free. No conflicting processes detected."
+        echo "✓ Required ports (${ports[*]}) are free. No conflicting processes detected."
         return 0
     fi
 
     # 4. Terminate with SIGTERM
-    pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    if [ "$preserve_fastapi" -ne 1 ]; then
+        pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    fi
     pkill -TERM -f "open-webui serve" 2>/dev/null || true
     pkill -TERM -f "open_webui" 2>/dev/null || true
 
@@ -174,7 +186,14 @@ stop_running_stack() {
 
     local wait_count=0
     while [ $wait_count -lt 5 ]; do
-        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui serve" >/dev/null 2>&1; then
+        local check_running=0
+        if [ "$preserve_fastapi" -ne 1 ] && pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1; then
+            check_running=1
+        fi
+        if pgrep -f "open-webui serve|open_webui" >/dev/null 2>&1; then
+            check_running=1
+        fi
+        if [ $check_running -eq 1 ]; then
             sleep 1
             wait_count=$((wait_count + 1))
         else
@@ -195,11 +214,12 @@ stop_running_stack() {
             fi
         fi
     done
-    pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    if [ "$preserve_fastapi" -ne 1 ]; then
+        pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    fi
     pkill -9 -f "open-webui serve" 2>/dev/null || true
     pkill -9 -f "open_webui" 2>/dev/null || true
-    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
-    echo "✓ Conflicting processes terminated. Ports 8000 and 8080 are now free."
+    echo "✓ Conflicting processes terminated. Required ports (${ports[*]}) are now free."
 }
 
 # Stop any previous versions before proceeding with setup/update
@@ -207,7 +227,6 @@ stop_running_stack
 
 # 1. Deploy agentic-browser and quizmaster skills to home directory
 echo "[1/4] Deploying agentic-browser and quizmaster skills..."
-rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
 if [ -d "$SCRIPT_DIR/agentic-browser" ]; then
     echo "Cleanly overwriting previous agentic-browser skill..."
     rm -rf "$HOME/.agents/skills/agentic-browser"
@@ -455,13 +474,11 @@ echo "✓ Configured Open WebUI launcher: $VENV_DIR/bin/open-webui"
 # 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.bezmezhau.com) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
 if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ] && [ "$(realpath "$SCRIPT_DIR/Gemini-FastAPI" 2>/dev/null)" != "$(realpath "$FASTAPI_DIR" 2>/dev/null)" ]; then
-    echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Cleanly overwriting previous version at $FASTAPI_DIR..."
-    rm -rf "$FASTAPI_DIR"
+    echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Syncing to $FASTAPI_DIR..."
     mkdir -p "$FASTAPI_DIR"
     cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
 elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ] && [ "$(realpath "$SCRIPT_DIR/gemini-fastapi" 2>/dev/null)" != "$(realpath "$FASTAPI_DIR" 2>/dev/null)" ]; then
-    echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Cleanly overwriting previous version at $FASTAPI_DIR..."
-    rm -rf "$FASTAPI_DIR"
+    echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Syncing to $FASTAPI_DIR..."
     mkdir -p "$FASTAPI_DIR"
     cp -r "$SCRIPT_DIR/gemini-fastapi/"* "$FASTAPI_DIR/"
 elif [ ! -d "$FASTAPI_DIR" ]; then
@@ -637,7 +654,7 @@ except Exception:
 
     # 1.4 Patch app/services/pool.py (Rookiepy multi-browser extraction, prioritize Firefox, DoH)
     pool_file = fastapi_dir / "app" / "services" / "pool.py"
-    if pool_file.exists():
+    if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_text():
         ptxt = pool_file.read_text()
         if "GeminiClientSettings" not in ptxt:
             ptxt = ptxt.replace("from app.utils import g_config", "from app.utils import g_config\nfrom app.utils.config import GeminiClientSettings")

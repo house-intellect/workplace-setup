@@ -84,10 +84,16 @@ export HF_HUB_OFFLINE=1
 
 stop_running_stack() {
     local ports=($FASTAPI_PORT $WEBUI_PORT)
+    local preserve_fastapi=0
+    if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        echo "✓ Gemini-FastAPI is already running and healthy on port $FASTAPI_PORT. Preserving active instance and rotated cookie sequence."
+        ports=($WEBUI_PORT)
+        preserve_fastapi=1
+    fi
     local found_occupying=0
     local announced_pids=""
 
-    echo "Checking required stack ports ($FASTAPI_PORT, $WEBUI_PORT) and running instances..."
+    echo "Checking required stack ports (${ports[*]}) and running instances..."
 
     # 1. Check processes holding required ports
     for port in "${ports[@]}"; do
@@ -118,7 +124,11 @@ stop_running_stack() {
 
     # 2. Check known stack processes by pattern
     local pattern_pids
-    pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui.*serve|open_webui" 2>/dev/null || true)
+    if [ "$preserve_fastapi" -eq 1 ]; then
+        pattern_pids=$(pgrep -f "open-webui.*serve|open_webui" 2>/dev/null || true)
+    else
+        pattern_pids=$(pgrep -f "gemini-fastapi.*run\.py|open-webui.*serve|open_webui" 2>/dev/null || true)
+    fi
     if [ -n "$pattern_pids" ]; then
         for pid in $pattern_pids; do
             case " $announced_pids " in
@@ -159,12 +169,14 @@ stop_running_stack() {
     fi
 
     if [ "$found_occupying" -eq 0 ]; then
-        echo "✓ Required ports ($FASTAPI_PORT, $WEBUI_PORT) are free. No conflicting processes detected."
+        echo "✓ Required ports (${ports[*]}) are free. No conflicting processes detected."
         return 0
     fi
 
     # 4. Terminate with SIGTERM
-    pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    if [ "$preserve_fastapi" -ne 1 ]; then
+        pkill -TERM -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    fi
     pkill -TERM -f "open-webui.*serve" 2>/dev/null || true
     pkill -TERM -f "open_webui" 2>/dev/null || true
 
@@ -183,7 +195,14 @@ stop_running_stack() {
 
     local wait_count=0
     while [ $wait_count -lt 5 ]; do
-        if pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1 || pgrep -f "open-webui.*serve" >/dev/null 2>&1 || pgrep -f "open_webui" >/dev/null 2>&1; then
+        local check_running=0
+        if [ "$preserve_fastapi" -ne 1 ] && pgrep -f "gemini-fastapi.*run\.py" >/dev/null 2>&1; then
+            check_running=1
+        fi
+        if pgrep -f "open-webui.*serve|open_webui" >/dev/null 2>&1; then
+            check_running=1
+        fi
+        if [ $check_running -eq 1 ]; then
             sleep 1
             wait_count=$((wait_count + 1))
         else
@@ -204,11 +223,12 @@ stop_running_stack() {
             fi
         fi
     done
-    pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    if [ "$preserve_fastapi" -ne 1 ]; then
+        pkill -9 -f "gemini-fastapi.*run\.py" 2>/dev/null || true
+    fi
     pkill -9 -f "open-webui.*serve" 2>/dev/null || true
     pkill -9 -f "open_webui" 2>/dev/null || true
-    rm -f /tmp/gemini_webapi/.cached_cookies_*.json 2>/dev/null || true
-    echo "✓ Conflicting processes terminated. Ports $FASTAPI_PORT and $WEBUI_PORT are now free."
+    echo "✓ Conflicting processes terminated. Required ports (${ports[*]}) are now free."
 }
 
 deploy_skills() {
