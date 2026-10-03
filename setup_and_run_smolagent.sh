@@ -1773,12 +1773,18 @@ def main():
             print("No models returned or FastAPI server is unreachable at " + api_base)
         sys.exit(0)
 
+    try:
+        import readline
+    except ImportError:
+        pass
+
     full_prompt = " ".join(args.prompt).strip()
     if args.file and os.path.exists(args.file):
         with open(args.file, "r", encoding="utf-8") as f:
-            full_prompt = f.read() + "\n" + full_prompt
+            file_text = f.read()
+            full_prompt = (file_text + "\n" + full_prompt) if full_prompt else file_text
 
-    if not full_prompt:
+    if not full_prompt and not sys.stdin.isatty():
         print("Error: No prompt provided.")
         sys.exit(1)
 
@@ -1807,8 +1813,27 @@ def main():
         model=model,
         max_steps=1500
     )
-    response = agent.run(full_prompt)
-    print(response)
+
+    if full_prompt:
+        response = agent.run(full_prompt, reset=False)
+        print(response)
+
+    if sys.stdin.isatty():
+        console = Console()
+        console.print("\n[bold green]💬 Conversation session active.[/bold green] Type your message below (or [bold red]exit[/bold red] / [bold red]quit[/bold red] to end):\n")
+        while True:
+            try:
+                user_input = input("You: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                console.print("\n[dim]Session closed.[/dim]")
+                break
+            if not user_input:
+                continue
+            if user_input.lower() in ("exit", "quit", "q", ":q"):
+                console.print("[dim]Session closed.[/dim]")
+                break
+            response = agent.run(user_input, reset=False)
+            print(response)
 
 if __name__ == "__main__":
     main()
@@ -1874,11 +1899,13 @@ if [ $LIST_MODELS -eq 0 ]; then
     fi
 
     if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
-        echo "Error: No prompt, text file, or image provided."
-        echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
-        echo "Use '$0 -t' to run with a thinking model and display the thought process."
-        echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
-        exit 1
+        if [ ! -t 0 ]; then
+            echo "Error: No prompt, text file, or image provided."
+            echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+            echo "Use '$0 -t' to run with a thinking model and display the thought process."
+            echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
+            exit 1
+        fi
     fi
 fi
 
@@ -2023,14 +2050,26 @@ fi
 # 3. Run Python agent (POSIX compatible argument passing)
 if [ $LIST_MODELS -eq 1 ]; then
     exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -l
-elif [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
-elif [ -n "$MODEL_ARG" ]; then
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" "$TASK_PROMPT"
-elif [ -n "$IMAGE_ARG" ]; then
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG" "$TASK_PROMPT"
+elif [ -n "$TASK_PROMPT" ]; then
+    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
+    elif [ -n "$MODEL_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" "$TASK_PROMPT"
+    elif [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG" "$TASK_PROMPT"
+    else
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "$TASK_PROMPT"
+    fi
 else
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "$TASK_PROMPT"
+    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG"
+    elif [ -n "$MODEL_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG"
+    elif [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG"
+    else
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH"
+    fi
 fi
 AGENT_EOF
 

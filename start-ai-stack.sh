@@ -209,6 +209,8 @@ export HF_HUB_OFFLINE=1
 export USE_SLIM=true
 export USE_SLIM_DOCKER=true
 export FRONTEND_BUILD_DIR="$INSTALL_DIR/open-webui/build"
+export DATA_DIR="$INSTALL_DIR/open-webui/backend/data"
+export DEFAULT_MODEL_METADATA='{"toolIds": ["native_bash_tool", "agentic_browser_tool"]}'
 
 # 2. Check and start Gemini-FastAPI server
 FASTAPI_HEALTHY=0

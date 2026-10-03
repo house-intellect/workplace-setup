@@ -389,6 +389,10 @@ if [ -f "$TARGET_DIR/package.json" ]; then
 fi
 for sp in "$VENV_DIR"/lib/python*/site-packages; do
     if [ -d "$sp" ]; then
+        if [ -d "$sp/open_webui" ]; then
+            echo "   -> Removing obsolete duplicate site-packages/open_webui from $sp..."
+            rm -rf "$sp/open_webui"
+        fi
         mkdir -p "$sp/open_webui-${WEBUI_VERSION}.dist-info"
         cat << EOF_META > "$sp/open_webui-${WEBUI_VERSION}.dist-info/METADATA"
 Metadata-Version: 2.1
@@ -412,6 +416,8 @@ os.environ.setdefault("WEBUI_HOST", "127.0.0.1")
 bin_dir = os.path.dirname(os.path.abspath(__file__))
 venv_dir = os.path.dirname(bin_dir)
 webui_dir = os.path.dirname(venv_dir)
+
+os.environ.setdefault("DATA_DIR", os.path.join(webui_dir, "backend", "data"))
 
 candidates = [
     os.path.join(webui_dir, "backend"),
@@ -448,12 +454,12 @@ echo "✓ Configured Open WebUI launcher: $VENV_DIR/bin/open-webui"
 
 # 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.bezmezhau.com) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
-if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ]; then
+if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ] && [ "$(realpath "$SCRIPT_DIR/Gemini-FastAPI" 2>/dev/null)" != "$(realpath "$FASTAPI_DIR" 2>/dev/null)" ]; then
     echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Cleanly overwriting previous version at $FASTAPI_DIR..."
     rm -rf "$FASTAPI_DIR"
     mkdir -p "$FASTAPI_DIR"
     cp -r "$SCRIPT_DIR/Gemini-FastAPI/"* "$FASTAPI_DIR/"
-elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ]; then
+elif [ -d "$SCRIPT_DIR/gemini-fastapi" ] && [ -f "$SCRIPT_DIR/gemini-fastapi/run.py" ] && [ "$(realpath "$SCRIPT_DIR/gemini-fastapi" 2>/dev/null)" != "$(realpath "$FASTAPI_DIR" 2>/dev/null)" ]; then
     echo "Found pre-downloaded gemini-fastapi in $SCRIPT_DIR/gemini-fastapi. Cleanly overwriting previous version at $FASTAPI_DIR..."
     rm -rf "$FASTAPI_DIR"
     mkdir -p "$FASTAPI_DIR"
@@ -1209,10 +1215,9 @@ except Exception:
 FOUND_DBS=()
 
 for db_pattern in \
-    "$VENV_DIR"/lib/python*/site-packages/open_webui/data/webui.db \
-    "$TARGET_DIR"/.venv/lib/python*/site-packages/open_webui/data/webui.db \
-    "$HOME"/local-ai-stack/open-webui/.venv/lib/python*/site-packages/open_webui/data/webui.db \
     "$TARGET_DIR"/backend/data/webui.db \
+    "$TARGET_DIR"/backend/open_webui/data/webui.db \
+    "$TARGET_DIR"/data/webui.db \
     "$HOME"/.open-webui/data/webui.db; do
     for f in $db_pattern; do
         if [ -f "$f" ]; then
@@ -1577,13 +1582,37 @@ try:
         )
     """)
 
+    default_tools = ["native_bash_tool", "agentic_browser_tool"]
+
+    # Set default metadata in config table so any new or base model inherits them globally
+    cursor.execute("""
+        INSERT INTO config (key, value, updated_at)
+        VALUES ('models.default_metadata', ?, strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=strftime('%s', 'now')
+    """, (json.dumps({"toolIds": default_tools}),))
+
+    # Also set default tools in all user settings
+    try:
+        cursor.execute("SELECT id, settings FROM user")
+        users = cursor.fetchall()
+        for u_id, u_settings in users:
+            try:
+                s_dict = json.loads(u_settings) if u_settings else {}
+            except Exception:
+                s_dict = {}
+            s_dict["tools"] = default_tools
+            cursor.execute("UPDATE user SET settings = ? WHERE id = ?", (json.dumps(s_dict), u_id))
+    except Exception as ue:
+        print(f"Notice: User settings update returned {ue}")
+
     meta_flash = json.dumps({
         "profile_image_url": "/static/favicon.png",
         "description": "3.8 Flash - Fast multimodal all-around model",
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
-        }
+        },
+        "toolIds": default_tools
     })
     meta_lite = json.dumps({
         "profile_image_url": "/static/favicon.png",
@@ -1591,7 +1620,8 @@ try:
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
-        }
+        },
+        "toolIds": default_tools
     })
     meta_thinking = json.dumps({
         "profile_image_url": "/static/favicon.png",
@@ -1599,7 +1629,8 @@ try:
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
-        }
+        },
+        "toolIds": default_tools
     })
     meta_pro = json.dumps({
         "profile_image_url": "/static/favicon.png",
@@ -1607,7 +1638,8 @@ try:
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
-        }
+        },
+        "toolIds": default_tools
     })
 
     meta_37_flash = json.dumps({
@@ -1616,7 +1648,8 @@ try:
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
-        }
+        },
+        "toolIds": default_tools
     })
     meta_37_pro = json.dumps({
         "profile_image_url": "/static/favicon.png",
@@ -1624,34 +1657,36 @@ try:
         "capabilities": {
             "vision": True, "file_upload": True, "web_search": True,
             "code_interpreter": True, "terminal": True, "builtin_tools": True
-        }
+        },
+        "toolIds": default_tools
     })
 
     models_to_register = [
-        ("gemini-3.7-flash", "Gemini 3.7 Flash", meta_37_flash),
-        ("gemini-3.7-pro", "Gemini 3.7 Pro", meta_37_pro),
-        ("gemini-3.8-flash", "3.8 Flash", meta_flash),
-        ("gemini-3.5-flash-lite", "3.5 Flash-Lite", meta_lite),
-        ("gemini-3.1-pro", "3.1 Pro", meta_pro),
-        ("gemini-extended-thinking", "Extended Thinking", meta_thinking),
-        ("gemini-3-flash", "Flash (Default)", meta_flash),
-        ("gemini-3-flash-thinking", "Flash Thinking", meta_thinking),
-        ("gemini-3-pro", "Pro", meta_pro),
-        ("flash", "Flash", meta_flash),
-        ("thinking", "Thinking", meta_thinking),
-        ("pro", "Pro", meta_pro),
+        ("gemini-3.7-flash", "Gemini 3.7 Flash", "flash", meta_37_flash),
+        ("gemini-3.7-pro", "Gemini 3.7 Pro", "pro", meta_37_pro),
+        ("gemini-3.8-flash", "3.8 Flash", None, meta_flash),
+        ("gemini-3.5-flash-lite", "3.5 Flash-Lite", None, meta_lite),
+        ("gemini-3.1-pro", "3.1 Pro", None, meta_pro),
+        ("gemini-extended-thinking", "Extended Thinking", None, meta_thinking),
+        ("gemini-3-flash", "Flash (Default)", "flash", meta_flash),
+        ("gemini-3-flash-thinking", "Flash Thinking", "thinking", meta_thinking),
+        ("gemini-3-pro", "Pro", "pro", meta_pro),
+        ("flash", "Flash", None, meta_flash),
+        ("thinking", "Thinking", None, meta_thinking),
+        ("pro", "Pro", None, meta_pro),
     ]
 
-    for m_id, m_name, m_meta in models_to_register:
+    for m_id, m_name, base_id, m_meta in models_to_register:
         cursor.execute("""
             INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
             VALUES (?, ?, ?, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
             ON CONFLICT(id) DO UPDATE SET
                 name=excluded.name,
+                base_model_id=excluded.base_model_id,
                 meta=excluded.meta,
                 is_active=1,
                 updated_at=strftime('%s', 'now')
-        """, (m_id, owner_id, m_id, m_name, m_meta))
+        """, (m_id, owner_id, base_id, m_name, m_meta))
 
 except Exception as e:
     print(f"Notice: Config / Model table update returned {e}")
@@ -1664,7 +1699,9 @@ done
 
 # 5. Ensure start-ai-stack.sh in local-ai-stack is synchronized with localhost binding
 if [ -f "$SCRIPT_DIR/start-ai-stack.sh" ] && [ -d "$HOME/local-ai-stack" ]; then
-    cp "$SCRIPT_DIR/start-ai-stack.sh" "$HOME/local-ai-stack/start-ai-stack.sh"
+    if [ "$(realpath "$SCRIPT_DIR/start-ai-stack.sh" 2>/dev/null)" != "$(realpath "$HOME/local-ai-stack/start-ai-stack.sh" 2>/dev/null)" ]; then
+        cp "$SCRIPT_DIR/start-ai-stack.sh" "$HOME/local-ai-stack/start-ai-stack.sh"
+    fi
     chmod +x "$HOME/local-ai-stack/start-ai-stack.sh"
 fi
 

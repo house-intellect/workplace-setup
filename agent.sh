@@ -54,11 +54,13 @@ if [ $LIST_MODELS -eq 0 ]; then
     fi
 
     if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
-        echo "Error: No prompt, text file, or image provided."
-        echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
-        echo "Use '$0 -t' to run with a thinking model and display the thought process."
-        echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
-        exit 1
+        if [ ! -t 0 ]; then
+            echo "Error: No prompt, text file, or image provided."
+            echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+            echo "Use '$0 -t' to run with a thinking model and display the thought process."
+            echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
+            exit 1
+        fi
     fi
 fi
 
@@ -208,13 +210,25 @@ fi
 # 3. Run Python agent (POSIX compatible argument passing)
 if [ $LIST_MODELS -eq 1 ]; then
     exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -l
-elif [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
-elif [ -n "$MODEL_ARG" ]; then
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" "$TASK_PROMPT"
-elif [ -n "$IMAGE_ARG" ]; then
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG" "$TASK_PROMPT"
+elif [ -n "$TASK_PROMPT" ]; then
+    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
+    elif [ -n "$MODEL_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" "$TASK_PROMPT"
+    elif [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG" "$TASK_PROMPT"
+    else
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "$TASK_PROMPT"
+    fi
 else
-    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" "$TASK_PROMPT"
+    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG" -i "$IMAGE_ARG"
+    elif [ -n "$MODEL_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -m "$MODEL_ARG"
+    elif [ -n "$IMAGE_ARG" ]; then
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -i "$IMAGE_ARG"
+    else
+        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH"
+    fi
 fi
 
