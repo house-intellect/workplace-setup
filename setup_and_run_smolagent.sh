@@ -1154,16 +1154,24 @@ import glob
 import json
 import argparse
 import subprocess
+import uuid
+import re
 from smolagents import ToolCallingAgent, OpenAIServerModel, tool, ChatMessage
+from smolagents.models import (
+    ChatMessageToolCall,
+    ChatMessageToolCallFunction,
+    TokenUsage,
+    parse_json_if_needed,
+)
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
 
 class ThinkingOpenAIServerModel(OpenAIServerModel):
     """
-    Subclass of OpenAIServerModel that preserves and displays Gemini reasoning_content
-    (thinking process) before tool execution or final answer generation, and enforces
-    a maximum request frequency of 1 request per 2 seconds.
+    Subclass of OpenAIServerModel that streams reasoning_content (thinking process)
+    and response tokens live to the terminal with rich visual indicators, preserving
+    full interactivity and transparent token exchange while enforcing rate limits.
     """
     _last_request_time = 0.0
 
@@ -1182,39 +1190,181 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
             time.sleep(2.0 - elapsed)
         ThinkingOpenAIServerModel._last_request_time = time.time()
 
-        chat_message = super().generate(
-            messages=messages,
-            stop_sequences=stop_sequences,
-            response_format=response_format,
-            tools_to_call_from=tools_to_call_from,
-            **kwargs,
-        )
-        ThinkingOpenAIServerModel._last_request_time = time.time()
-        raw = getattr(chat_message, "raw", None)
-        if raw and getattr(raw, "choices", None) and len(raw.choices) > 0:
-            msg = raw.choices[0].message
-            thoughts = getattr(msg, "reasoning_content", None)
-            if not thoughts and hasattr(msg, "model_extra") and msg.model_extra:
-                thoughts = msg.model_extra.get("reasoning_content")
+        try:
+            completion_kwargs = self._prepare_completion_kwargs(
+                messages=messages,
+                stop_sequences=stop_sequences,
+                response_format=response_format,
+                tools_to_call_from=tools_to_call_from,
+                model=self.model_id,
+                custom_role_conversions=self.custom_role_conversions,
+                convert_images_to_image_urls=True,
+                **kwargs,
+            )
+            self._apply_rate_limit()
+            completion_kwargs["stream"] = True
 
-            if thoughts and str(thoughts).strip():
-                console = Console()
-                console.print()
-                console.print(
-                    Panel(
-                        Markdown(str(thoughts).strip()),
-                        title="[bold cyan]🧠 Thinking Process[/bold cyan]",
-                        border_style="cyan",
-                        padding=(1, 2),
+            # Visual indicator that request is in flight
+            sys.stdout.write("\033[2m⚡ Exchanging tokens with Gemini...\033[0m\r")
+            sys.stdout.flush()
+
+            stream = self.retryer(self.client.chat.completions.create, **completion_kwargs)
+
+            accumulated_thoughts = ""
+            accumulated_content = ""
+            accumulated_tool_calls = {}
+            in_thought = False
+            in_content = False
+            first_chunk_received = False
+            role = "assistant"
+            total_prompt_tokens = 0
+            total_completion_tokens = 0
+
+            for chunk in stream:
+                if not chunk.choices:
+                    continue
+                if not first_chunk_received:
+                    if sys.stdout.isatty():
+                        sys.stdout.write("\r\033[K")
+                    else:
+                        sys.stdout.write("\n")
+                    sys.stdout.flush()
+                    first_chunk_received = True
+
+                delta = chunk.choices[0].delta
+                if delta.role:
+                    role = delta.role
+
+                thought_delta = getattr(delta, "reasoning_content", None)
+                if not thought_delta and hasattr(delta, "model_extra") and delta.model_extra:
+                    thought_delta = delta.model_extra.get("reasoning_content")
+
+                if thought_delta:
+                    if not in_thought:
+                        sys.stdout.write("\n\033[1;36m🧠 Thinking Process:\033[0m\n\033[0;36m")
+                        sys.stdout.flush()
+                        in_thought = True
+                    accumulated_thoughts += thought_delta
+                    sys.stdout.write(thought_delta)
+                    sys.stdout.flush()
+
+                if delta.content:
+                    if in_thought:
+                        sys.stdout.write("\033[0m\n\n")
+                        sys.stdout.flush()
+                        in_thought = False
+                    if not in_content:
+                        sys.stdout.write("\033[1;33m⚡ Assistant:\033[0m ")
+                        sys.stdout.flush()
+                        in_content = True
+                    accumulated_content += delta.content
+                    sys.stdout.write(delta.content)
+                    sys.stdout.flush()
+
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        idx = tc.index
+                        if idx not in accumulated_tool_calls:
+                            accumulated_tool_calls[idx] = {
+                                "id": tc.id or f"call_{idx}_{uuid.uuid4().hex[:6]}",
+                                "type": "function",
+                                "function": {
+                                    "name": tc.function.name or "" if tc.function else "",
+                                    "arguments": tc.function.arguments or "" if tc.function else "",
+                                },
+                            }
+                        else:
+                            if tc.function:
+                                if tc.function.name:
+                                    accumulated_tool_calls[idx]["function"]["name"] += tc.function.name
+                                if tc.function.arguments:
+                                    accumulated_tool_calls[idx]["function"]["arguments"] += tc.function.arguments
+
+                if hasattr(chunk, "usage") and chunk.usage:
+                    total_prompt_tokens = getattr(chunk.usage, "prompt_tokens", total_prompt_tokens)
+                    total_completion_tokens = getattr(chunk.usage, "completion_tokens", total_completion_tokens)
+
+            if not first_chunk_received:
+                if sys.stdout.isatty():
+                    sys.stdout.write("\r\033[K")
+                else:
+                    sys.stdout.write("\n")
+                sys.stdout.flush()
+            if in_thought:
+                sys.stdout.write("\033[0m\n")
+                sys.stdout.flush()
+            if in_content:
+                sys.stdout.write("\n")
+                sys.stdout.flush()
+
+            tool_calls = None
+            if accumulated_tool_calls:
+                tool_calls = [
+                    ChatMessageToolCall(
+                        id=data["id"],
+                        type=data["type"],
+                        function=ChatMessageToolCallFunction(
+                            name=data["function"]["name"],
+                            arguments=data["function"]["arguments"],
+                        ),
                     )
-                )
-                console.print()
+                    for data in accumulated_tool_calls.values()
+                ]
 
-        if chat_message.tool_calls and chat_message.content and str(chat_message.content).strip():
-            console = Console()
-            console.print(f"[bold yellow]Assistant:[/bold yellow] {str(chat_message.content).strip()}")
+            ThinkingOpenAIServerModel._last_request_time = time.time()
+            chat_message = ChatMessage(
+                role=role,
+                content=accumulated_content,
+                tool_calls=tool_calls,
+                token_usage=TokenUsage(
+                    input_tokens=total_prompt_tokens,
+                    output_tokens=total_completion_tokens,
+                ),
+            )
+            chat_message.reasoning_content = accumulated_thoughts
+            return chat_message
 
-        return chat_message
+        except Exception:
+            # Fallback to standard non-streaming generation if stream encounters any error
+            if sys.stdout.isatty():
+                sys.stdout.write("\r\033[K")
+            else:
+                sys.stdout.write("\n")
+            sys.stdout.flush()
+            ThinkingOpenAIServerModel._last_request_time = time.time()
+            chat_message = super().generate(
+                messages=messages,
+                stop_sequences=stop_sequences,
+                response_format=response_format,
+                tools_to_call_from=tools_to_call_from,
+                **kwargs,
+            )
+            ThinkingOpenAIServerModel._last_request_time = time.time()
+            raw = getattr(chat_message, "raw", None)
+            if raw and getattr(raw, "choices", None) and len(raw.choices) > 0:
+                msg = raw.choices[0].message
+                thoughts = getattr(msg, "reasoning_content", None)
+                if not thoughts and hasattr(msg, "model_extra") and msg.model_extra:
+                    thoughts = msg.model_extra.get("reasoning_content")
+
+                if thoughts and str(thoughts).strip():
+                    console = Console()
+                    console.print()
+                    console.print(
+                        Panel(
+                            Markdown(str(thoughts).strip()),
+                            title="[bold cyan]🧠 Thinking Process[/bold cyan]",
+                            border_style="cyan",
+                            padding=(1, 2),
+                        )
+                    )
+                    console.print()
+
+            if chat_message.tool_calls and chat_message.content and str(chat_message.content).strip():
+                console = Console()
+                console.print(f"[bold yellow]Assistant:[/bold yellow] {str(chat_message.content).strip()}")
+
+            return chat_message
 
     def parse_tool_calls(self, message: ChatMessage) -> ChatMessage:
         """
@@ -1336,7 +1486,20 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
                 if name:
                     add_call(name, args)
 
-        # Strategy 3: ReAct pattern (Action: ... \n Action Input: ...)
+        # Strategy 3: ReAct pattern (Action: ... \n Action Input: ...) or Action: { ... }
+        if not extracted_calls:
+            action_json_match = re.search(r"Action\s*:\s*(\{.*?\})", content, re.DOTALL | re.IGNORECASE)
+            if action_json_match:
+                try:
+                    obj = json.loads(action_json_match.group(1).strip())
+                    if isinstance(obj, dict):
+                        name = obj.get("name") or obj.get("action")
+                        args = obj.get("arguments") or obj.get("args") or obj.get("action_input") or obj.get("input")
+                        if name:
+                            add_call(name, args)
+                except Exception:
+                    pass
+
         if not extracted_calls:
             react_match = re.search(r"Action\s*:\s*([^\n]+)\s*\nAction Input\s*:\s*(.*)", content, re.DOTALL | re.IGNORECASE)
             if react_match:
@@ -1353,7 +1516,10 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
                     add_call("execute_bash", {"command": cmd})
 
         if not extracted_calls:
-            return super().parse_tool_calls(message)
+            clean_answer = content.strip()
+            if not clean_answer:
+                clean_answer = "Done."
+            add_call("final_answer", {"answer": clean_answer})
 
         message.tool_calls = extracted_calls
         return message
@@ -1689,7 +1855,12 @@ def main():
         chosen_model = "gemini-pro"
     elif not chosen_model:
         avail = get_available_models(api_base)
-        chosen_model = avail[0] if avail else "gemini-flash"
+        if "gemini-flash" in avail:
+            chosen_model = "gemini-flash"
+        elif avail:
+            chosen_model = avail[0]
+        else:
+            chosen_model = "gemini-flash"
     elif args.thinking and chosen_model != "gemini-pro":
         chosen_model = "gemini-pro"
 

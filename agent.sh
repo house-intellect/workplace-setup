@@ -50,7 +50,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ $THINKING_ARG -eq 1 ] && [ -z "$MODEL_ARG" ]; then
-    MODEL_ARG="thinking"
+    MODEL_ARG="gemini-pro"
 fi
 
 if [ $LIST_MODELS -eq 0 ]; then
