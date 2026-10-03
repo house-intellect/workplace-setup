@@ -18,21 +18,21 @@ trap 'rm -rf "$WORK_DIR"' EXIT
 mkdir -p "$WORK_DIR/workplace-setup"
 
 echo "[1/3] Copying workplace-setup scripts and skills..."
-rsync -a --exclude=".git" --exclude="__pycache__" --exclude="*.pyc" --exclude=".venv" --exclude="*.tar.gz" \
+rsync -aH --exclude=".git" --exclude="__pycache__" --exclude="*.pyc" --exclude=".venv" --exclude="*.tar.gz" --exclude="*.map" \
     --exclude="backend/data" --exclude="data/webui.db*" --exclude="*.db*" --exclude="*.sqlite*" --exclude=".webui_secret_key" \
     "$SCRIPT_DIR/" "$WORK_DIR/workplace-setup/"
 
 if [ -d "$STACK_DIR/gemini-fastapi" ]; then
     echo "[2/3] Bundling pre-downloaded Gemini-FastAPI (~9 MB)..."
     mkdir -p "$WORK_DIR/workplace-setup/gemini-fastapi"
-    rsync -a --exclude=".git" --exclude=".venv" --exclude="__pycache__" --exclude="*.pyc" --exclude="data/lmdb" \
+    rsync -aH --exclude=".git" --exclude=".venv" --exclude="__pycache__" --exclude="*.pyc" --exclude="data/lmdb" \
         "$STACK_DIR/gemini-fastapi/" "$WORK_DIR/workplace-setup/gemini-fastapi/"
 fi
 
 if [ ! -d "$WORK_DIR/workplace-setup/open-webui" ] && [ -d "$STACK_DIR/open-webui" ]; then
     echo "[2.5/3] Bundling pre-downloaded Open WebUI..."
     mkdir -p "$WORK_DIR/workplace-setup/open-webui"
-    rsync -a --exclude=".git" --exclude=".venv" --exclude="__pycache__" --exclude="*.pyc" \
+    rsync -aH --exclude=".git" --exclude=".venv" --exclude="__pycache__" --exclude="*.pyc" --exclude="*.map" \
         --exclude="backend/data" --exclude="data/webui.db*" --exclude="*.db*" --exclude="*.sqlite*" --exclude=".webui_secret_key" \
         "$STACK_DIR/open-webui/" "$WORK_DIR/workplace-setup/open-webui/"
 fi
