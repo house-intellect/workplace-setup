@@ -1557,7 +1557,7 @@ def quizmaster(max_questions: int = 0) -> str:
             if not out_text:
                 err_text = res.stderr.strip()
                 if "Failed to connect to browser" in err_text:
-                    msg = "Failed to connect to browser on port 9222. Please start Yandex Browser with:\nyandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins=\"*\""
+                    msg = "Failed to connect to browser on port 9222. Could not automatically launch or connect to Yandex Browser."
                     print(f"[QuizMaster] {msg}", flush=True)
                     return msg
                 print(f"[QuizMaster] No question received. Exiting.", flush=True)

@@ -11,10 +11,7 @@ An autonomous yet non-intrusive in-browser live assistant for online quizzes and
 - "quizmaster", "quiz-copilot", "quiz assistant", "quiz loop", "solve quiz", "assist with quiz", "quiz"
 
 ## Prerequisites
-The browser (Yandex Browser or Chromium) must be launched with remote debugging enabled using a non-default user data directory:
-```bash
-yandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins="*"
-```
+The underlying `agentic-browser` engine automatically checks browser connectivity on port `9222`, finds your Yandex Browser executable and user profile, and automatically launches the debug session in nohup background mode if it is not already running.
 
 ## Core Protocol & Blocking Loop
 
@@ -42,13 +39,9 @@ sequenceDiagram
 ```
 
 ### 1. Connectivity Check
-Before beginning, verify that the browser is accessible on port 9222:
+The script automatically ensures connectivity on port 9222. You can also verify the debug endpoint manually at any time with:
 ```bash
 curl -s http://127.0.0.1:9222/json/version
-```
-If connection fails, instruct the user to launch their browser with:
-```bash
-yandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins="*"
 ```
 
 ### 2. The Blocking Waiter Step

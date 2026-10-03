@@ -9,18 +9,13 @@ Autonomous, semantic browser navigation capabilities for dynamic DOM analysis, e
 ## Triggers
 "browse", "navigate", "extract from web", "interact with browser", "upload file to browser", "fix browser viewport", "step-fill", "goto", "screenshot", "scroll", "wait-quiz", "select option", "type answer"
 
-## Prerequisites: Running the Debugged Browser
-The browser automation connects strictly to an existing browser instance on port `9222`. It does not launch standalone browsers.
+## Browser Connectivity & Automatic Launch
+The tool automatically checks browser connectivity on port `9222` before executing any commands.
+- If Yandex Browser is already reachable on port `9222`, commands connect immediately without interruption.
+- If not reachable (or if a debugless Yandex Browser instance is already running), the tool automatically kills stale debugless instances, locates the Yandex Browser executable and your real user profile directory (`$HOME/.config/yandex-browser`), sets up a debug profile wrapper preserving all logins and cookies, and launches the browser in nohup background mode on port `9222` with all stdio/stderr suppressed.
 
-Run the debugged browser with:
-```bash
-yandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins="*"
-```
-
-> **Note**: Remote debugging requires a non-default `--user-data-dir` and `--remote-allow-origins="*"` for the CDP endpoint (`127.0.0.1:9222`) to bind properly.
-
-### Verification
-Verify connectivity before issuing automation commands:
+### Optional Manual Verification
+You can verify the debug endpoint at any time with:
 ```bash
 curl -s http://127.0.0.1:9222/json/version
 ```

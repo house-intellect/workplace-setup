@@ -1,6 +1,148 @@
 const puppeteer = require('puppeteer');
 const path = require('path');
 const fs = require('fs');
+const { spawn, execSync } = require('child_process');
+
+function findBrowserExecutable() {
+  const candidates = [
+    '/usr/bin/yandex-browser-stable',
+    '/usr/bin/yandex-browser',
+    '/opt/yandex/browser/yandex-browser',
+    '/opt/yandex/browser/yandex_browser',
+    'yandex-browser-stable',
+    'yandex-browser',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/chromium'
+  ];
+  for (const c of candidates) {
+    if (c.startsWith('/') && fs.existsSync(c)) {
+      return c;
+    }
+    try {
+      const p = execSync(`which ${c} 2>/dev/null`, { encoding: 'utf8' }).trim();
+      if (p && fs.existsSync(p)) return p;
+    } catch (e) {}
+  }
+  return null;
+}
+
+function findUserProfileDir() {
+  const home = process.env.HOME || '/home/grapeonwheels';
+  const candidates = [
+    path.join(home, '.config', 'yandex-browser'),
+    path.join(home, '.config', 'yandex-browser-beta'),
+    path.join(home, '.config', 'google-chrome'),
+    path.join(home, '.config', 'chromium')
+  ];
+  for (const dir of candidates) {
+    if (fs.existsSync(dir)) {
+      const defaultProf = path.join(dir, 'Default');
+      if (fs.existsSync(defaultProf)) {
+        return dir;
+      }
+    }
+  }
+  return path.join(home, '.config', 'yandex-browser');
+}
+
+function prepareDebugProfile(realProfileDir) {
+  const home = process.env.HOME || '/home/grapeonwheels';
+  const debugDir = path.join(home, '.config', 'yandex-browser-debug-profile');
+  fs.mkdirSync(debugDir, { recursive: true });
+
+  const lockNames = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+  for (const lock of lockNames) {
+    try { fs.unlinkSync(path.join(realProfileDir, lock)); } catch (e) {}
+    try { fs.unlinkSync(path.join(debugDir, lock)); } catch (e) {}
+  }
+
+  try {
+    const entries = fs.readdirSync(realProfileDir);
+    for (const ent of entries) {
+      if (lockNames.includes(ent)) continue;
+      const src = path.join(realProfileDir, ent);
+      const dest = path.join(debugDir, ent);
+      try {
+        if (fs.existsSync(dest) || fs.lstatSync(dest).isSymbolicLink()) {
+          try {
+            if (fs.readlinkSync(dest) === src) continue;
+          } catch (e) {}
+          fs.rmSync(dest, { recursive: true, force: true });
+        }
+      } catch (e) {}
+      try {
+        fs.symlinkSync(src, dest);
+      } catch (e) {}
+    }
+  } catch (e) {}
+
+  return debugDir;
+}
+
+async function checkBrowserConnectivity() {
+  try {
+    const resp = await fetch('http://127.0.0.1:9222/json/version', {
+      signal: AbortSignal.timeout(1500)
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json();
+    return Boolean(data && (data.webSocketDebuggerUrl || data.Browser));
+  } catch (e) {
+    return false;
+  }
+}
+
+async function ensureBrowserRunning() {
+  if (await checkBrowserConnectivity()) {
+    return;
+  }
+
+  // Kill any existing running instance to guarantee new process starts with debug port
+  try {
+    execSync('killall -9 yandex_browser yandex-browser yandex-browser-stable 2>/dev/null || true');
+  } catch (e) {}
+
+  await new Promise(r => setTimeout(r, 600));
+
+  const exe = findBrowserExecutable();
+  if (!exe) {
+    throw new Error('Yandex Browser executable not found.');
+  }
+
+  const realProfile = findUserProfileDir();
+  const debugProfile = prepareDebugProfile(realProfile);
+
+  const display = process.env.DISPLAY || ':0';
+  const child = spawn('nohup', [
+    exe,
+    '--remote-debugging-port=9222',
+    '--remote-allow-origins=*',
+    `--user-data-dir=${debugProfile}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--restore-last-session'
+  ], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+      DISPLAY: display
+    }
+  });
+  child.unref();
+
+  const start = Date.now();
+  while (Date.now() - start < 15000) {
+    await new Promise(r => setTimeout(r, 300));
+    if (await checkBrowserConnectivity()) {
+      return;
+    }
+  }
+
+  throw new Error(`Started ${exe} on port 9222 with user profile, but port did not respond within 15 seconds.`);
+}
 
 class BrowserAgent {
   constructor(options = {}) {
@@ -10,6 +152,7 @@ class BrowserAgent {
   }
 
   async init() {
+    await ensureBrowserRunning();
     try {
       const versionResp = await fetch('http://127.0.0.1:9222/json/version');
       if (!versionResp.ok) {
@@ -43,7 +186,7 @@ class BrowserAgent {
       });
     } catch (err) {
       throw new Error(
-        `Failed to connect to browser on 127.0.0.1:9222 (${err.message}). Ensure Chromium/Yandex Browser is running with: yandex-browser --remote-debugging-port=9222 --user-data-dir=$HOME/.config/yandex-browser-debug --remote-allow-origins="*"`
+        `Failed to connect to browser on 127.0.0.1:9222 (${err.message}). Could not automatically launch or connect to Yandex Browser with remote debugging.`
       );
     }
   }
@@ -1107,6 +1250,34 @@ class BrowserAgent {
 
   const [rawCommand, arg1, ...rest] = cleanArgs;
   const command = (rawCommand || '').toLowerCase().replace(/_/g, '-');
+
+  const availableCommands = [
+    'tabs',
+    'map',
+    'goto <url>',
+    'click <target>',
+    'input <target> <value> (step-fill by default)',
+    'step-fill <target> <value>',
+    'select-option <target> <option>',
+    'upload <files...|folder>',
+    'screenshot [path]',
+    'scroll [down|up|top|bottom|<target>]',
+    'errors',
+    'reset-viewport',
+    'wait <query> [timeoutMs]',
+    'text [selector]',
+    'eval <code>',
+    'wait-quiz [prev]',
+    'select <target>',
+    'type <text> [delayMs]',
+    'type-file <file> [delayMs]',
+  ];
+
+  if (!rawCommand || rawCommand === '--help' || rawCommand === '-h' || rawCommand === 'help') {
+    console.log(JSON.stringify({ usage: 'node agent.js [options] <command> [args...]', commands: availableCommands }, null, 2));
+    process.exit(0);
+  }
+
   const agent = new BrowserAgent({ url: urlPattern, tab: tabIndex });
   await agent.init();
 
