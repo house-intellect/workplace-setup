@@ -472,7 +472,7 @@ case "$MODE" in
 
         # Step 5: Run Smolagent & Gemini-FastAPI Setup
         echo "--- [2/3] Installing / Syncing Smolagent CLI & Gemini-FastAPI ---"
-        SKIP_WEBUI_START=1 bash "$SCRIPT_DIR/setup_and_run_smolagent.sh"
+        SKIP_WEBUI_START=1 SMOLAGENT_AUTO_EXIT=1 bash "$SCRIPT_DIR/setup_and_run_smolagent.sh" < /dev/null
         echo ""
 
         # Step 6: Start/Verify Open WebUI Stack
