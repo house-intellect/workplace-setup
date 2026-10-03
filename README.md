@@ -55,7 +55,7 @@ A Puppeteer-based browser automation engine operating on local Chrome / Yandex B
 
 To download the standalone self-sufficient bundle and launch the AI stack directly:
 ```bash
-curl -sSL "https://drive.usercontent.google.com/download?id=17tfa-upwDHmz1f7ha4vOu7ys2kieWjgk&export=download&confirm=t" -o workplace-ai-bundle.tar.gz && tar -xzf workplace-ai-bundle.tar.gz && cd workplace-setup && ./install-bundle.sh
+curl -sSL "https://drive.usercontent.google.com/download?id=1b_BXs37Vwmpp-KxSoyOSSbgRWigm9E1L&export=download&confirm=t" -o workplace-ai-bundle.tar.gz && tar -xzf workplace-ai-bundle.tar.gz && cd workplace-setup && ./install-bundle.sh
 ```
 
 Or download and execute the all-in-one setup launcher:
