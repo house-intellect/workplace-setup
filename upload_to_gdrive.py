@@ -6,7 +6,9 @@ import os
 import sys
 from pathlib import Path
 
-BUNDLE_PATH = Path(os.path.expanduser("~/workplace-ai-bundle.tar.gz"))
+BUNDLE_PATH = Path(__file__).resolve().parent / "workplace-ai-bundle.tar.gz"
+if not BUNDLE_PATH.exists():
+    BUNDLE_PATH = Path(os.path.expanduser("~/workplace-ai-bundle.tar.gz"))
 
 def main():
     if not BUNDLE_PATH.exists():

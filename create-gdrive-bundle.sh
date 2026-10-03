@@ -6,7 +6,7 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STACK_DIR="${LOCAL_AI_STACK_DIR:-$HOME/local-ai-stack}"
-OUTPUT_ARCHIVE="${1:-$HOME/workplace-ai-bundle.tar.gz}"
+OUTPUT_ARCHIVE="${1:-$SCRIPT_DIR/workplace-ai-bundle.tar.gz}"
 
 echo "=================================================================="
 echo "    Packaging AI Stack Bundle for Google Drive (Offline / No GitHub)"

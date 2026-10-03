@@ -2,7 +2,7 @@
 
 This bundle contains a single, completely self-sufficient offline archive for running the Local AI Stack without internet or GitHub access:
 
-## 📦 Single Unified Bundle Archive: `workplace-offline-bundle.tar.gz`
+## 📦 Single Unified Bundle Archive: `workplace-ai-bundle.tar.gz`
 
 The archive contains one unified bundle installer file cache—no nested archives:
 - **`install-bundle.sh` & `bundle-installer.sh`**: Unified installer script that stops running processes, factors in both Smolagent and Open WebUI, and sets up everything in one pass.
@@ -21,7 +21,7 @@ The archive contains one unified bundle installer file cache—no nested archive
 
 ### 1. Extract the Single Bundle Archive
 ```bash
-tar -xzf workplace-offline-bundle.tar.gz
+tar -xzf workplace-ai-bundle.tar.gz
 cd workplace-bundle
 ```
 
