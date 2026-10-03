@@ -298,7 +298,7 @@ CHECK_DEPS="import smolagents, openai, PIL, pydantic, requests, gemini_webapi, r
 if ! "$PYTHON_EXEC" -c "$CHECK_DEPS" 2>/dev/null; then
     echo "Installing smolagents, gemini-webapi, rookiepy, and server dependencies..."
     "$PIP_EXEC" install --upgrade pip 2>/dev/null || true
-    "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi==2.0.0" uvicorn fastapi lmdb pydantic-settings pyyaml
+    "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi>=2.1.1" uvicorn fastapi lmdb pydantic-settings pyyaml
 fi
 
 # 3. Check/Install Gemini-FastAPI Server
@@ -762,118 +762,7 @@ if cfg_py.exists():
 ' 2>/dev/null || true
 fi
 
-if [ -f "$FASTAPI_DIR/app/server/chat.py" ]; then
-    if ! grep -q "gemini-3.7-flash" "$FASTAPI_DIR/app/server/chat.py"; then
-        "$PYTHON_EXEC" -c '
-from pathlib import Path
-p = Path("'"$FASTAPI_DIR"'/app/server/chat.py")
-txt = p.read_text()
-old_fn = """def _get_model_by_name(name: str) -> Model:
-    \"\"\"Retrieve a Model instance by name.\"\"\"
-    strategy = g_config.gemini.model_strategy
-    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
-    if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
-
-    if strategy == "overwrite":
-        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
-
-    return Model.from_name(name)"""
-
-new_fn = """MODEL_ALIASES = {
-    # Live Gemini Web UI names & aliases
-    "gemini-3.8-flash": "gemini-3-flash",
-    "3.8-flash": "gemini-3-flash",
-    "3.8-Flash": "gemini-3-flash",
-    "gemini-3.5-flash-lite": "gemini-3-flash",
-    "3.5-flash-lite": "gemini-3-flash",
-    "3.5-Flash-Lite": "gemini-3-flash",
-    "gemini-3.1-pro": "gemini-3-pro",
-    "3.1-pro": "gemini-3-pro",
-    "3.1-Pro": "gemini-3-pro",
-    "gemini-extended-thinking": "gemini-3-flash-thinking",
-    "extended-thinking": "gemini-3-flash-thinking",
-    "Extended thinking": "gemini-3-flash-thinking",
-    "gemini-3.7-flash": "gemini-3-flash",
-    "gemini-3.7-pro": "gemini-3-pro",
-    "gemini-3-flash": "gemini-3-flash",
-    "gemini-3-flash-thinking": "gemini-3-flash-thinking",
-    "gemini-3-pro": "gemini-3-pro",
-    "flash": "gemini-3-flash",
-    "thinking": "gemini-3-flash-thinking",
-    "pro": "gemini-3-pro",
-    "gemini-flash": "gemini-3-flash",
-    "gemini-thinking": "gemini-3-flash-thinking",
-    "gemini-pro": "gemini-3-pro",
-    "gpt-4o": "gemini-3-flash",
-    "gpt-4": "gemini-3-pro",
-    "gpt-3.5-turbo": "gemini-3-flash",
-}
-
-def _get_model_by_name(name: str) -> Model:
-    \"\"\"Retrieve a Model instance by name.\"\"\"
-    strategy = g_config.gemini.model_strategy
-    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
-
-    if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
-
-    resolved_name = MODEL_ALIASES.get(name, name)
-    if resolved_name in custom_models:
-        return Model.from_dict(custom_models[resolved_name].model_dump())
-
-    if strategy == "overwrite":
-        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
-
-    try:
-        return Model.from_name(resolved_name)
-    except Exception:
-        return Model.BASIC_FLASH
-
-
-def _get_available_models() -> list[ModelData]:
-    \"\"\"Return a clean list of available models based on configuration strategy.\"\"\"
-    now = int(datetime.now(tz=UTC).timestamp())
-    strategy = g_config.gemini.model_strategy
-    models_data = []
-
-    custom_models = [m for m in g_config.gemini.models if m.model_name]
-    for m in custom_models:
-        models_data.append(
-            ModelData(
-                id=m.model_name,
-                created=now,
-                owned_by="custom",
-            )
-        )
-
-    priority_aliases = [
-        "gemini-3.8-flash",
-        "gemini-3.5-flash-lite",
-        "gemini-3.1-pro",
-        "gemini-extended-thinking",
-        "flash",
-        "thinking",
-        "pro",
-    ]
-    for a in priority_aliases:
-        models_data.append(
-            ModelData(
-                id=a,
-                created=now,
-                owned_by="gemini-web",
-            )
-        )
-
-    return models_data"""
-
-if old_fn in txt:
-    txt = txt.replace(old_fn, new_fn)
-    p.write_text(txt)
-' 2>/dev/null || true
-    fi
-fi
 
 # Ensure 1 req / 2s max frequency rate limiting and resilient session fallback in chat.py
 if [ -f "$FASTAPI_DIR/app/server/chat.py" ]; then
@@ -1616,7 +1505,7 @@ def quizmaster(max_questions: int = 0) -> str:
                     "http://127.0.0.1:8000/v1/chat/completions",
                     headers={"Content-Type": "application/json"},
                     data=json.dumps({
-                        "model": "gemini-3.8-flash",
+                        "model": "gemini-flash",
                         "messages": [{"role": "user", "content": prompt_content}]
                     }).encode("utf-8")
                 )
@@ -1753,8 +1642,8 @@ def get_available_models(api_base="http://127.0.0.1:8000/v1"):
 
 def main():
     parser = argparse.ArgumentParser(description="Smolagent Runner")
-    parser.add_argument("-m", "--model", help="Model name (or alias, e.g. flash, thinking, pro, 3.8-flash, 3.1-pro)", default=None)
-    parser.add_argument("-t", "--thinking", action="store_true", help="Force selection of a thinking model (e.g. thinking / gemini-extended-thinking)")
+    parser.add_argument("-m", "--model", help="Model name (e.g. gemini-flash, gemini-pro, gemini-flash-lite)", default=None)
+    parser.add_argument("-t", "--thinking", action="store_true", help="Force selection of gemini-pro")
     parser.add_argument("-f", "--file", help="Input text file path", default=None)
     parser.add_argument("-i", "--image", help="Input image path or folder", default=None)
     parser.add_argument("-l", "--list-models", action="store_true", help="List available models from running FastAPI server")
@@ -1797,12 +1686,12 @@ def main():
     # Dynamic model resolution from FastAPI
     chosen_model = args.model or os.environ.get("MODEL")
     if args.thinking and not chosen_model:
-        chosen_model = "thinking"
+        chosen_model = "gemini-pro"
     elif not chosen_model:
         avail = get_available_models(api_base)
-        chosen_model = avail[0] if avail else "flash"
-    elif args.thinking and chosen_model not in ["thinking", "gemini-extended-thinking", "gemini-3-flash-thinking"]:
-        chosen_model = "thinking"
+        chosen_model = avail[0] if avail else "gemini-flash"
+    elif args.thinking and chosen_model != "gemini-pro":
+        chosen_model = "gemini-pro"
 
     model = ThinkingOpenAIServerModel(
         model_id=chosen_model,
@@ -1897,7 +1786,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ $THINKING_ARG -eq 1 ] && [ -z "$MODEL_ARG" ]; then
-    MODEL_ARG="thinking"
+    MODEL_ARG="gemini-pro"
 fi
 
 if [ $LIST_MODELS -eq 0 ]; then
@@ -1909,7 +1798,7 @@ if [ $LIST_MODELS -eq 0 ]; then
         if [ ! -t 0 ]; then
             echo "Error: No prompt, text file, or image provided."
             echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
-            echo "Use '$0 -t' to run with a thinking model and display the thought process."
+            echo "Use '$0 -t' to run with gemini-pro and display reasoning."
             echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
             exit 1
         fi

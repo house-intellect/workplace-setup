@@ -910,65 +910,7 @@ gemini:
         elif "import time" not in ch_txt:
             ch_txt = "import time\n" + ch_txt
 
-        if "gemini-3.7-flash" not in ch_txt and "MODEL_ALIASES" not in ch_txt:
-            old_m = """def _get_model_by_name(name: str) -> Model:
-    \"\"\"Retrieve a Model instance by name.\"\"\"
-    strategy = g_config.gemini.model_strategy
-    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
 
-    if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
-
-    if strategy == "overwrite":
-        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
-
-    return Model.from_name(name)"""
-
-            new_m = """MODEL_ALIASES = {
-    "gemini-3.8-flash": "gemini-3-flash",
-    "3.8-flash": "gemini-3-flash",
-    "3.8-Flash": "gemini-3-flash",
-    "gemini-3.5-flash-lite": "gemini-3-flash",
-    "3.5-flash-lite": "gemini-3-flash",
-    "3.5-Flash-Lite": "gemini-3-flash",
-    "gemini-3.1-pro": "gemini-3-pro",
-    "3.1-pro": "gemini-3-pro",
-    "3.1-Pro": "gemini-3-pro",
-    "gemini-extended-thinking": "gemini-3-flash-thinking",
-    "extended-thinking": "gemini-3-flash-thinking",
-    "Extended thinking": "gemini-3-flash-thinking",
-    "gemini-3.7-flash": "gemini-3-flash",
-    "gemini-3.7-pro": "gemini-3-pro",
-    "gemini-3-flash": "gemini-3-flash",
-    "gemini-3-flash-thinking": "gemini-3-flash-thinking",
-    "gemini-3-pro": "gemini-3-pro",
-    "flash": "gemini-3-flash",
-    "thinking": "gemini-3-flash-thinking",
-    "pro": "gemini-3-pro",
-    "gemini-flash": "gemini-3-flash",
-    "gemini-thinking": "gemini-3-flash-thinking",
-    "gemini-pro": "gemini-3-pro",
-    "gpt-4o": "gemini-3-flash",
-    "gpt-4": "gemini-3-pro",
-    "gpt-3.5-turbo": "gemini-3-flash",
-}
-
-def _get_model_by_name(name: str) -> Model:
-    strategy = g_config.gemini.model_strategy
-    custom_models = {m.model_name: m for m in g_config.gemini.models if m.model_name}
-    if name in custom_models:
-        return Model.from_dict(custom_models[name].model_dump())
-    resolved_name = MODEL_ALIASES.get(name, name)
-    if resolved_name in custom_models:
-        return Model.from_dict(custom_models[resolved_name].model_dump())
-    if strategy == "overwrite":
-        raise ValueError(f"Model \x27{name}\x27 not found in custom models (strategy=\x27overwrite\x27).")
-    try:
-        return Model.from_name(resolved_name)
-    except Exception:
-        return Model.BASIC_FLASH"""
-            if old_m in ch_txt:
-                ch_txt = ch_txt.replace(old_m, new_m)
 
         if "MIN_REQUEST_INTERVAL" not in ch_txt:
             rl_code = """
@@ -1535,13 +1477,13 @@ try:
     """)
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
-        VALUES ('openai.api_configs', '{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-3-flash", "gemini-3-flash-thinking", "gemini-3-pro", "gemini-3.7-flash", "gemini-3.7-flash-thinking", "gemini-3.1-pro"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', strftime('%s', 'now'))
-        ON CONFLICT(key) DO UPDATE SET value='{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-3-flash", "gemini-3-flash-thinking", "gemini-3-pro", "gemini-3.7-flash", "gemini-3.7-flash-thinking", "gemini-3.1-pro"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', updated_at=strftime('%s', 'now')
+        VALUES ('openai.api_configs', '{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-flash", "gemini-pro", "gemini-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value='{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-flash", "gemini-pro", "gemini-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', updated_at=strftime('%s', 'now')
     """)
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
-        VALUES ('ui.default_models', '"gemini-3-flash"', strftime('%s', 'now'))
-        ON CONFLICT(key) DO UPDATE SET value='"gemini-3-flash"', updated_at=strftime('%s', 'now')
+        VALUES ('ui.default_models', '"gemini-flash"', strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value='"gemini-flash"', updated_at=strftime('%s', 'now')
     """)
 
     # Impose max request frequency: disable concurrent auto-tasks in Open WebUI
@@ -1623,15 +1565,6 @@ try:
         },
         "toolIds": default_tools
     })
-    meta_thinking = json.dumps({
-        "profile_image_url": "/static/favicon.png",
-        "description": "Extended Thinking - Multimodal reasoning with internal chain-of-thought",
-        "capabilities": {
-            "vision": True, "file_upload": True, "web_search": True,
-            "code_interpreter": True, "terminal": True, "builtin_tools": True
-        },
-        "toolIds": default_tools
-    })
     meta_pro = json.dumps({
         "profile_image_url": "/static/favicon.png",
         "description": "3.1 Pro - Flagship advanced reasoning and complex problem solving",
@@ -1642,38 +1575,10 @@ try:
         "toolIds": default_tools
     })
 
-    meta_37_flash = json.dumps({
-        "profile_image_url": "/static/favicon.png",
-        "description": "Gemini 3.7 Flash - Fast multimodal all-around model",
-        "capabilities": {
-            "vision": True, "file_upload": True, "web_search": True,
-            "code_interpreter": True, "terminal": True, "builtin_tools": True
-        },
-        "toolIds": default_tools
-    })
-    meta_37_pro = json.dumps({
-        "profile_image_url": "/static/favicon.png",
-        "description": "Gemini 3.7 Pro - Advanced reasoning and coding model",
-        "capabilities": {
-            "vision": True, "file_upload": True, "web_search": True,
-            "code_interpreter": True, "terminal": True, "builtin_tools": True
-        },
-        "toolIds": default_tools
-    })
-
     models_to_register = [
-        ("gemini-3.7-flash", "Gemini 3.7 Flash", "flash", meta_37_flash),
-        ("gemini-3.7-pro", "Gemini 3.7 Pro", "pro", meta_37_pro),
-        ("gemini-3.8-flash", "3.8 Flash", None, meta_flash),
-        ("gemini-3.5-flash-lite", "3.5 Flash-Lite", None, meta_lite),
-        ("gemini-3.1-pro", "3.1 Pro", None, meta_pro),
-        ("gemini-extended-thinking", "Extended Thinking", None, meta_thinking),
-        ("gemini-3-flash", "Flash (Default)", "flash", meta_flash),
-        ("gemini-3-flash-thinking", "Flash Thinking", "thinking", meta_thinking),
-        ("gemini-3-pro", "Pro", "pro", meta_pro),
-        ("flash", "Flash", None, meta_flash),
-        ("thinking", "Thinking", None, meta_thinking),
-        ("pro", "Pro", None, meta_pro),
+        ("gemini-flash", "Gemini Flash", None, meta_flash),
+        ("gemini-pro", "Gemini Pro", None, meta_pro),
+        ("gemini-flash-lite", "Gemini Flash-Lite", None, meta_lite),
     ]
 
     for m_id, m_name, base_id, m_meta in models_to_register:
@@ -1687,6 +1592,11 @@ try:
                 is_active=1,
                 updated_at=strftime('%s', 'now')
         """, (m_id, owner_id, base_id, m_name, m_meta))
+
+    # Remove all ghost model names and disguised twins
+    cursor.execute("""
+        DELETE FROM model WHERE id NOT IN ('gemini-flash', 'gemini-pro', 'gemini-flash-lite');
+    """)
 
 except Exception as e:
     print(f"Notice: Config / Model table update returned {e}")
