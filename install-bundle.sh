@@ -86,9 +86,17 @@ stop_running_stack() {
     local ports=($FASTAPI_PORT $WEBUI_PORT)
     local preserve_fastapi=0
     if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
-        echo "✓ Gemini-FastAPI is already running and healthy on port $FASTAPI_PORT. Preserving active instance and rotated cookie sequence."
-        ports=($WEBUI_PORT)
-        preserve_fastapi=1
+        local probe_resp
+        probe_resp=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
+        if echo "$probe_resp" | grep -q '"choices"'; then
+            echo "✓ Gemini-FastAPI is authenticated and healthy on port $FASTAPI_PORT. Preserving active instance and rotated cookie sequence."
+            ports=($WEBUI_PORT)
+            preserve_fastapi=1
+        else
+            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT is unauthenticated or in Guest mode. Stopping instance to allow fresh browser cookie extraction..."
+        fi
     fi
     local found_occupying=0
     local announced_pids=""

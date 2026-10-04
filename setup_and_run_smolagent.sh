@@ -82,9 +82,17 @@ stop_running_stack() {
     local ports=(8000 8080)
     local preserve_fastapi=0
     if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1; then
-        echo "✓ Gemini-FastAPI is already running and healthy on port 8000. Preserving active instance and rotated cookie sequence."
-        ports=(8080)
-        preserve_fastapi=1
+        local probe_resp
+        probe_resp=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
+        if echo "$probe_resp" | grep -q '"choices"'; then
+            echo "✓ Gemini-FastAPI is authenticated and healthy on port 8000. Preserving active instance and rotated cookie sequence."
+            ports=(8080)
+            preserve_fastapi=1
+        else
+            echo "⚠️  Gemini-FastAPI on port 8000 is unauthenticated or in Guest mode. Stopping instance to allow fresh browser cookie extraction..."
+        fi
     fi
     local found_occupying=0
     local announced_pids=""
@@ -314,12 +322,13 @@ fi
 PYTHON_EXEC="$VENV_DIR/bin/python"
 PIP_EXEC="$VENV_DIR/bin/pip"
 
-CHECK_DEPS="import smolagents, openai, PIL, pydantic, requests, gemini_webapi, rookiepy, fastapi, uvicorn, lmdb, pydantic_settings; from smolagents import OpenAIServerModel"
+CHECK_DEPS="import smolagents, openai, PIL, pydantic, requests, gemini_webapi, rookiepy, fastapi, uvicorn, lmdb, pydantic_settings, prompt_toolkit; from smolagents import OpenAIServerModel"
 if ! "$PYTHON_EXEC" -c "$CHECK_DEPS" 2>/dev/null; then
     echo "Installing smolagents, gemini-webapi, rookiepy, and server dependencies..."
     "$PIP_EXEC" install --upgrade pip 2>/dev/null || true
-    "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi>=2.1.1" uvicorn fastapi lmdb pydantic-settings pyyaml
+    "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi>=2.1.1" uvicorn fastapi lmdb pydantic-settings pyyaml prompt_toolkit
 fi
+
 
 # 3. Check/Install Gemini-FastAPI Server
 echo "[3/4] Setting up Gemini-FastAPI server..."
@@ -1172,6 +1181,23 @@ import argparse
 import subprocess
 import uuid
 import re
+import signal
+
+_sigint_count = 0
+def _sigint_handler(sig, frame):
+    global _sigint_count
+    _sigint_count += 1
+    if _sigint_count >= 2:
+        sys.stderr.write("\n\033[1;31m[Force exit via Ctrl+C]\033[0m\n")
+        sys.stderr.flush()
+        os._exit(130)
+    sys.stderr.write("\n\033[33m[Interrupting... Press Ctrl+C again to force exit]\033[0m\n")
+    sys.stderr.flush()
+    raise KeyboardInterrupt()
+
+signal.signal(signal.SIGINT, _sigint_handler)
+signal.signal(signal.SIGTERM, lambda s, f: os._exit(143))
+
 from smolagents import ToolCallingAgent, OpenAIServerModel, tool, ChatMessage
 from smolagents.models import (
     ChatMessageToolCall,
@@ -1182,6 +1208,7 @@ from smolagents.models import (
 from rich.console import Console
 from rich.panel import Panel
 from rich.markdown import Markdown
+
 
 class ThinkingOpenAIServerModel(OpenAIServerModel):
     """
@@ -1525,9 +1552,19 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
 
         # Strategy 4: Raw bash markdown block fallback (```bash ... ``` or ```sh ... ```)
         if not extracted_calls:
-            bash_block_match = re.search(r"```(?:bash|sh)\s*\n(.*?)\n```", content, re.DOTALL | re.IGNORECASE)
-            if bash_block_match:
-                cmd = bash_block_match.group(1).strip()
+            bash_blocks = re.findall(r"```(?:bash|sh)\s*\n(.*?)\n```", content, re.DOTALL | re.IGNORECASE)
+            if len(bash_blocks) > 1:
+                # Multiple fragmented markdown bash blocks detected without formal tool calls!
+                # Do NOT execute just the first one or blindly stack them.
+                # Instead, reply with a firm demand to provide a single, unified one-paster command.
+                demand_cmd = (
+                    "echo 'ERROR [ToolCalling]: Multiple fragmented markdown ```bash blocks were provided instead of invoking the execute_bash tool. "
+                    "Do NOT output multiple separate markdown bash blocks or fragmented steps in prose. "
+                    "You MUST invoke the execute_bash tool with a single, complete, unified one-paster command or multiline bash script to solve the problem.'"
+                )
+                add_call("execute_bash", {"command": demand_cmd})
+            elif len(bash_blocks) == 1:
+                cmd = bash_blocks[0].strip()
                 if cmd:
                     add_call("execute_bash", {"command": cmd})
 
@@ -1543,12 +1580,13 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
 @tool
 def execute_bash(command: str) -> str:
     """
-    Executes a shell command in a full Bash environment on the local machine and returns the stdout and stderr output.
-    Supports complex shell features including pipelines (|), redirects (>, >>), chained commands (&&, ||, ;), process substitution, environment variables, and multiline scripts.
+    Executes a shell command or complete multiline script in a full Bash environment on the local machine and returns stdout/stderr.
+    CRITICAL: Always provide a single, self-contained, unified one-paste command or script. Never split actions into multiple separate markdown code snippets.
 
     Args:
-        command: The bash command string or multiline script to execute in /bin/bash.
+        command: The single unified bash command string or multiline script to execute in /bin/bash.
     """
+
     import subprocess
     try:
         res = subprocess.run(
@@ -1898,20 +1936,88 @@ def main():
     auto_exit = args.non_interactive or (os.environ.get("SMOLAGENT_AUTO_EXIT", "0").lower() in ("1", "true", "yes"))
     if sys.stdin.isatty() and not auto_exit:
         console = Console()
-        console.print("\n[bold green]💬 Conversation session active.[/bold green] Type your message below (or [bold red]exit[/bold red] / [bold red]quit[/bold red] to end):\n")
+        console.print("\n[bold green]💬 Conversation session active.[/bold green]")
+        console.print("[dim]• Press Enter to send, or paste multiline text directly.[/dim]")
+        console.print("[dim]• Press Alt+Enter / Esc+Enter for a new line, or end a line with '\\'.[/dim]")
+        console.print("[dim]• Type 'exit', press Ctrl+D, or press Ctrl+C to quit.[/dim]\n")
+
+        prompt_session = None
+        try:
+            from prompt_toolkit import PromptSession
+            from prompt_toolkit.formatted_text import HTML
+            from prompt_toolkit.key_binding import KeyBindings
+
+            kb = KeyBindings()
+            @kb.add("escape", "enter")
+            def _(event):
+                event.current_buffer.insert_text("\n")
+
+            prompt_session = PromptSession(key_bindings=kb)
+        except Exception:
+            prompt_session = None
+
+        def read_input() -> str:
+            if prompt_session is not None:
+                # prompt_toolkit has native bracketed paste support out of the box
+                return prompt_session.prompt(HTML("<b><ansigreen>You:</ansigreen></b> ")).strip()
+
+            # Robust fallback for terminal without prompt_toolkit
+            sys.stdout.write("\033[1;32mYou:\033[0m ")
+            sys.stdout.flush()
+            sys.stdout.write("\033[?2004h")  # enable bracketed paste
+            sys.stdout.flush()
+            try:
+                first = sys.stdin.readline()
+                if not first:
+                    raise EOFError()
+                buf = [first]
+                if "\033[200~" in first:
+                    raw = first
+                    while "\033[201~" not in raw:
+                        nxt = sys.stdin.readline()
+                        if not nxt:
+                            break
+                        raw += nxt
+                    clean = raw.replace("\033[200~", "").replace("\033[201~", "")
+                    return clean.strip()
+
+                while buf[-1].rstrip().endswith("\\"):
+                    buf[-1] = buf[-1].rstrip()[:-1] + "\n"
+                    sys.stdout.write("\033[2m... \033[0m")
+                    sys.stdout.flush()
+                    nxt = sys.stdin.readline()
+                    if not nxt:
+                        break
+                    buf.append(nxt)
+                return "".join(buf).strip()
+            finally:
+                sys.stdout.write("\033[?2004l")  # disable bracketed paste
+                sys.stdout.flush()
+
         while True:
             try:
-                user_input = input("You: ").strip()
-            except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]Session closed.[/dim]")
-                break
+                user_input = read_input()
+            except EOFError:
+                console.print("\n[dim]Session closed (Ctrl+D).[/dim]")
+                os._exit(0)
+            except KeyboardInterrupt:
+                console.print("\n[dim]Session closed (Ctrl+C).[/dim]")
+                os._exit(130)
+
             if not user_input:
                 continue
             if user_input.lower() in ("exit", "quit", "q", ":q"):
                 console.print("[dim]Session closed.[/dim]")
-                break
-            response = agent.run(user_input, reset=False)
-            print(response)
+                os._exit(0)
+
+            try:
+                response = agent.run(user_input, reset=False)
+                print(response)
+            except KeyboardInterrupt:
+                console.print("\n[yellow]Task cancelled by user (Ctrl+C). Ready for next query or type exit.[/yellow]")
+            except Exception as e:
+                console.print(f"\n[bold red]Error:[/bold red] {e}")
+
 
 if __name__ == "__main__":
     main()
@@ -2015,10 +2121,25 @@ CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dn
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
-if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+check_proxy_auth() {
+    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        return 1
+    fi
+    local probe
+    probe=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
+    if echo "$probe" | grep -q '"choices"'; then
+        return 0
+    fi
+    return 1
+}
+
+if ! check_proxy_auth; then
     if command -v fuser >/dev/null 2>&1; then
         fuser -k -TERM "$FASTAPI_PORT/tcp" 2>/dev/null || true
     fi
+
     SPOOF_DIR="$HOME/.local/share/gemini-spoof"
     HOSTS_FILE="$SPOOF_DIR/hosts"
     if [ ! -f "$HOSTS_FILE" ] || ! grep -q "91.108.243.78" "$HOSTS_FILE" 2>/dev/null; then

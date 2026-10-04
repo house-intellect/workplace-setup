@@ -95,10 +95,25 @@ CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dn
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
-if ! curl --noproxy "*" --max-time 3 -s -f http://127.0.0.1:$FASTAPI_PORT/v1/models >/dev/null 2>&1; then
+check_proxy_auth() {
+    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        return 1
+    fi
+    local probe
+    probe=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
+        -H "Content-Type: application/json" \
+        -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
+    if echo "$probe" | grep -q '"choices"'; then
+        return 0
+    fi
+    return 1
+}
+
+if ! check_proxy_auth; then
     if command -v fuser >/dev/null 2>&1; then
         fuser -k -TERM "$FASTAPI_PORT/tcp" 2>/dev/null || true
     fi
+
     SPOOF_DIR="$HOME/.local/share/gemini-spoof"
     HOSTS_FILE="$SPOOF_DIR/hosts"
     if [ ! -f "$HOSTS_FILE" ] || ! grep -q "91.108.243.78" "$HOSTS_FILE" 2>/dev/null; then
