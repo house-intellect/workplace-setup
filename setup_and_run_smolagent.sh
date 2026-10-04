@@ -81,17 +81,29 @@ echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash)
 stop_running_stack() {
     local ports=(8000 8080)
     local preserve_fastapi=0
-    if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1; then
-        local probe_resp
-        probe_resp=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+    if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1; then
+        local probe_resp http_code body
+        probe_resp=$(curl --noproxy "*" --max-time 15 -s -w "\nHTTP_STATUS:%{http_code}" -X POST "http://127.0.0.1:8000/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
-        if echo "$probe_resp" | grep -q '"choices"'; then
+        http_code=$(echo "$probe_resp" | grep "HTTP_STATUS:" | cut -d':' -f2)
+        body=$(echo "$probe_resp" | sed '/HTTP_STATUS:/d')
+
+        if echo "$body" | grep -q '"choices"'; then
             echo "✓ Gemini-FastAPI is authenticated and healthy on port 8000. Preserving active instance and rotated cookie sequence."
             ports=(8080)
             preserve_fastapi=1
+        elif [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
+            echo "⚠️  Gemini-FastAPI on port 8000 responded slowly to probe, but HTTP server is running. Preserving active instance."
+            ports=(8080)
+            preserve_fastapi=1
+        elif [ "$http_code" = "401" ] || [ "$http_code" = "403" ] || \
+             echo "$body" | grep -iqE '("status":\s*(401|403|1016|1002)|unauthenticated|guest mode|guest session|not available for use|is not available for use|autherror|login_required)'; then
+            echo "⚠️  Gemini-FastAPI on port 8000 returned unauthenticated / Guest mode error (HTTP $http_code). Stopping instance to allow fresh browser cookie extraction..."
         else
-            echo "⚠️  Gemini-FastAPI on port 8000 is unauthenticated or in Guest mode. Stopping instance to allow fresh browser cookie extraction..."
+            echo "⚠️  Gemini-FastAPI on port 8000 returned status $http_code. Preserving active instance."
+            ports=(8080)
+            preserve_fastapi=1
         fi
     fi
     local found_occupying=0
@@ -2122,22 +2134,58 @@ export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
 check_proxy_auth() {
-    if ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
-        return 1
+    # 1. Quick check if port is serving HTTP /v1/models
+    if ! curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        return 2  # Server not running / port closed
     fi
-    local probe
-    probe=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
+
+    # 2. Probe gemini-flash directly with generous 15s timeout
+    local resp http_code body
+    resp=$(curl --noproxy "*" --max-time 15 -s -w "\nHTTP_STATUS:%{http_code}" -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
         -H "Content-Type: application/json" \
         -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
-    if echo "$probe" | grep -q '"choices"'; then
+    http_code=$(echo "$resp" | grep "HTTP_STATUS:" | cut -d':' -f2)
+    body=$(echo "$resp" | sed '/HTTP_STATUS:/d')
+
+    if echo "$body" | grep -q '"choices"'; then
+        return 0  # Authenticated and healthy
+    fi
+
+    # Check if timeout (000 or empty) - server is alive but network or model slow/warming up. Preserve instance!
+    if [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
+        echo "⚠️  Probe to gemini-flash timed out, but Gemini-FastAPI is active on port $FASTAPI_PORT. Preserving instance."
         return 0
     fi
-    return 1
+
+    # Explicit auth/guest/unavailable error
+    if [ "$http_code" = "401" ] || [ "$http_code" = "403" ] || \
+       echo "$body" | grep -iqE '("status":\s*(401|403|1016|1002)|unauthenticated|guest mode|guest session|not available for use|is not available for use|autherror|login_required)'; then
+        echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT returned unauthenticated / Guest mode error (HTTP $http_code)."
+        return 1  # Unauthenticated
+    fi
+
+    # Any other status: if /v1/models is alive, do not kill blindly
+    return 0
 }
 
-if ! check_proxy_auth; then
-    if command -v fuser >/dev/null 2>&1; then
-        fuser -k -TERM "$FASTAPI_PORT/tcp" 2>/dev/null || true
+check_proxy_auth
+auth_status=$?
+
+if [ $auth_status -eq 0 ]; then
+    # Server is active, authenticated, and healthy. Do not restart or kill.
+    :
+else
+    # If auth_status is 1 (confirmed unauthenticated/guest error):
+    # Only then terminate the dead/unauthenticated instance so a new one can be started.
+    if [ $auth_status -eq 1 ]; then
+        if command -v fuser >/dev/null 2>&1; then
+            fuser -k -TERM "$FASTAPI_PORT/tcp" 2>/dev/null || true
+            sleep 1
+        elif command -v lsof >/dev/null 2>&1; then
+            local_pids=$(lsof -ti:"$FASTAPI_PORT" 2>/dev/null || true)
+            [ -n "$local_pids" ] && kill -TERM $local_pids 2>/dev/null || true
+            sleep 1
+        fi
     fi
 
     SPOOF_DIR="$HOME/.local/share/gemini-spoof"

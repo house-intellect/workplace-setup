@@ -85,17 +85,29 @@ export HF_HUB_OFFLINE=1
 stop_running_stack() {
     local ports=($FASTAPI_PORT $WEBUI_PORT)
     local preserve_fastapi=0
-    if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
-        local probe_resp
-        probe_resp=$(curl --noproxy "*" --max-time 4 -s -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
+    if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        local probe_resp http_code body
+        probe_resp=$(curl --noproxy "*" --max-time 15 -s -w "\nHTTP_STATUS:%{http_code}" -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
-        if echo "$probe_resp" | grep -q '"choices"'; then
+        http_code=$(echo "$probe_resp" | grep "HTTP_STATUS:" | cut -d':' -f2)
+        body=$(echo "$probe_resp" | sed '/HTTP_STATUS:/d')
+
+        if echo "$body" | grep -q '"choices"'; then
             echo "✓ Gemini-FastAPI is authenticated and healthy on port $FASTAPI_PORT. Preserving active instance and rotated cookie sequence."
             ports=($WEBUI_PORT)
             preserve_fastapi=1
+        elif [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
+            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT responded slowly to probe, but HTTP server is running. Preserving active instance."
+            ports=($WEBUI_PORT)
+            preserve_fastapi=1
+        elif [ "$http_code" = "401" ] || [ "$http_code" = "403" ] || \
+             echo "$body" | grep -iqE '("status":\s*(401|403|1016|1002)|unauthenticated|guest mode|guest session|not available for use|is not available for use|autherror|login_required)'; then
+            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT returned unauthenticated / Guest mode error (HTTP $http_code). Stopping instance to allow fresh browser cookie extraction..."
         else
-            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT is unauthenticated or in Guest mode. Stopping instance to allow fresh browser cookie extraction..."
+            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT returned status $http_code. Preserving active instance."
+            ports=($WEBUI_PORT)
+            preserve_fastapi=1
         fi
     fi
     local found_occupying=0
