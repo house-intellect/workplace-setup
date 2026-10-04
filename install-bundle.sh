@@ -271,6 +271,15 @@ deploy_skills() {
         cp -r "$SCRIPT_DIR/quizmaster/"* "$skills_base/quizmaster/"
         echo "   -> quizmaster skill deployed."
     fi
+
+    if [ -d "$SCRIPT_DIR/vision" ]; then
+        echo "   -> Overwriting previous vision skill..."
+        rm -rf "$skills_base/vision"
+        mkdir -p "$skills_base/vision"
+        cp -r "$SCRIPT_DIR/vision/"* "$skills_base/vision/"
+        chmod +x "$skills_base/vision/scripts/vision_tool.py" 2>/dev/null || true
+        echo "   -> vision skill deployed."
+    fi
 }
 
 start_openwebui_background() {
@@ -526,7 +535,7 @@ case "$MODE" in
         echo "✓ Gemini-FastAPI: Running on port 8000 (1 req / 2s rate limit)."
         echo "✓ Open WebUI:      Running on http://127.0.0.1:8080 (Tools registered)."
         echo "✓ Smolagent CLI:   Installed with thinking display & rate limits."
-        echo "✓ Agentic Skills:  agentic-browser & quizmaster deployed."
+        echo "✓ Agentic Skills:  agentic-browser, quizmaster, and vision deployed."
         echo ""
         echo "Quick Access & Commands:"
         echo "  • Open WebUI Web Interface: http://127.0.0.1:8080"

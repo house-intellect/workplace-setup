@@ -12,6 +12,8 @@ NON_INTERACTIVE_ARG=""
 THINKING_ARG=0
 LIST_MODELS=0
 
+IMAGE_ARGS=""
+
 while [ $# -gt 0 ]; do
     case "$1" in
         -f|--file)
@@ -19,6 +21,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         -i|--image)
+            IMAGE_ARGS="$IMAGE_ARGS -i $2"
             IMAGE_ARG="$2"
             shift 2
             ;;
@@ -267,24 +270,8 @@ fi
 if [ $LIST_MODELS -eq 1 ]; then
     exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -l
 elif [ -n "$TASK_PROMPT" ]; then
-    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
-    elif [ -n "$MODEL_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG" "$TASK_PROMPT"
-    elif [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -i "$IMAGE_ARG" "$TASK_PROMPT"
-    else
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} "$TASK_PROMPT"
-    fi
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} ${MODEL_ARG:+-m "$MODEL_ARG"} $IMAGE_ARGS "$TASK_PROMPT"
 else
-    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG" -i "$IMAGE_ARG"
-    elif [ -n "$MODEL_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG"
-    elif [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -i "$IMAGE_ARG"
-    else
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"}
-    fi
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} ${MODEL_ARG:+-m "$MODEL_ARG"} $IMAGE_ARGS
 fi
 

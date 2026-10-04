@@ -1174,6 +1174,12 @@ mkdir -p "$QUIZ_DIR"
 if [ -d "$SCRIPT_DIR/quizmaster" ]; then
     cp -r "$SCRIPT_DIR/quizmaster/"* "$QUIZ_DIR/"
 fi
+VISION_DIR="$HOME/.agents/skills/vision"
+mkdir -p "$VISION_DIR"
+if [ -d "$SCRIPT_DIR/vision" ]; then
+    cp -r "$SCRIPT_DIR/vision/"* "$VISION_DIR/"
+    chmod +x "$VISION_DIR/scripts/vision_tool.py" 2>/dev/null || true
+fi
 if [ ! -d "$SKILL_DIR/node_modules" ]; then
     if command -v npm >/dev/null 2>&1; then
         (cd "$SKILL_DIR" && npm init -y >/dev/null 2>&1 || true)
@@ -1377,6 +1383,8 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
                 ),
             )
             chat_message.reasoning_content = accumulated_thoughts
+            if chat_message.tool_calls:
+                chat_message = self.parse_tool_calls(chat_message)
             return chat_message
 
         except Exception:
@@ -1419,6 +1427,8 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
                 console = Console()
                 console.print(f"[bold yellow]Assistant:[/bold yellow] {str(chat_message.content).strip()}")
 
+            if chat_message.tool_calls:
+                chat_message = self.parse_tool_calls(chat_message)
             return chat_message
 
     def parse_tool_calls(self, message: ChatMessage) -> ChatMessage:
@@ -1434,6 +1444,31 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
         if message.tool_calls and len(message.tool_calls) > 0:
             for tc in message.tool_calls:
                 tc.function.arguments = parse_json_if_needed(tc.function.arguments)
+                if isinstance(tc.function.arguments, dict):
+                    if tc.function.name in ["vision", "vision_tool", "analyze_image", "analyze_images"]:
+                        tc.function.name = "vision_tool"
+                        for k in ["image_paths", "images", "image_path", "image"]:
+                            if k in tc.function.arguments:
+                                v = tc.function.arguments[k]
+                                if isinstance(v, str):
+                                    v_str = v.strip()
+                                    if v_str.startswith("[") and v_str.endswith("]"):
+                                        try:
+                                            parsed = json.loads(v_str)
+                                            if isinstance(parsed, list):
+                                                v = parsed
+                                        except Exception:
+                                            pass
+                                    elif "," in v_str and not os.path.exists(v_str):
+                                        v = [p.strip() for p in v_str.split(",") if p.strip()]
+                                    else:
+                                        v = [v_str]
+                                elif not isinstance(v, list):
+                                    v = [v]
+                                tc.function.arguments["image_paths"] = v
+                                if k != "image_paths":
+                                    tc.function.arguments.pop(k, None)
+                                break
             return message
 
         content = message.content or ""
@@ -1451,6 +1486,8 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
                 clean_name = "execute_bash"
             elif clean_name in ["browser", "agentic_browser", "agentic_browser_tool"]:
                 clean_name = "agentic_browser_tool"
+            elif clean_name in ["vision", "vision_tool", "analyze_image", "analyze_images"]:
+                clean_name = "vision_tool"
 
             clean_args = args
             if isinstance(clean_args, str):
@@ -1459,10 +1496,25 @@ class ThinkingOpenAIServerModel(OpenAIServerModel):
                 except Exception:
                     if clean_name == "execute_bash":
                         clean_args = {"command": clean_args.strip()}
+                    elif clean_name == "vision_tool":
+                        clean_args = {"image_paths": [clean_args.strip()]}
                     else:
                         clean_args = {"input": clean_args.strip()}
             elif not isinstance(clean_args, dict):
                 clean_args = {}
+
+            if clean_name == "vision_tool" and isinstance(clean_args, dict):
+                if "image_path" in clean_args and "image_paths" not in clean_args:
+                    val = clean_args.pop("image_path")
+                    clean_args["image_paths"] = [val] if isinstance(val, str) else val
+                elif "images" in clean_args and "image_paths" not in clean_args:
+                    val = clean_args.pop("images")
+                    clean_args["image_paths"] = val if isinstance(val, list) else [val]
+                elif "image" in clean_args and "image_paths" not in clean_args:
+                    val = clean_args.pop("image")
+                    clean_args["image_paths"] = [val] if isinstance(val, str) else val
+                if "image_paths" in clean_args and isinstance(clean_args["image_paths"], str):
+                    clean_args["image_paths"] = [clean_args["image_paths"]]
 
             extracted_calls.append(
                 ChatMessageToolCall(
@@ -1857,6 +1909,85 @@ def type_quiz_file(file_path: str, delay_ms: int = 200) -> str:
     except Exception as e:
         return f"Error executing type-file: {str(e)}"
 
+@tool
+def vision_tool(image_paths: list[str], prompt: str = "Describe and compare these images in detail, answering any questions.") -> str:
+    """
+    Analyzes one or multiple images, screenshots, or diagrams in a single request using the OpenAI-compatible vision endpoint.
+    Formats all images into base64 data URIs inside the content array of one message and queries the vision model.
+
+    Args:
+        image_paths: List of absolute or relative paths to image files (PNG, JPG, WEBP, GIF), directories, or URLs to send together in one request.
+        prompt: Question or instructions describing what to analyze across the images.
+    """
+    import os
+    import sys
+    import json
+    import glob
+    from pathlib import Path
+
+    skill_script = os.path.expanduser("~/.agents/skills/vision/scripts/vision_tool.py")
+    if not os.path.exists(skill_script):
+        fallback = os.path.expanduser("~/PythonProjects/workplace-setup/vision/scripts/vision_tool.py")
+        if os.path.exists(fallback):
+            skill_script = fallback
+
+    # Normalize image_paths: can be list, str, json string, or comma-separated
+    raw_inputs = []
+    if isinstance(image_paths, str):
+        s = image_paths.strip()
+        if s.startswith("[") and s.endswith("]"):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    raw_inputs = parsed
+            except Exception:
+                raw_inputs = [s]
+        elif "," in s and not os.path.exists(s):
+            raw_inputs = [p.strip() for p in s.split(",") if p.strip()]
+        else:
+            raw_inputs = [s]
+    elif isinstance(image_paths, (list, tuple)):
+        raw_inputs = list(image_paths)
+    else:
+        raw_inputs = [str(image_paths)]
+
+    normalized_paths = []
+    for item in raw_inputs:
+        if not item:
+            continue
+        item_str = str(item).strip().strip("'\"")
+        if item_str.startswith(("http://", "https://", "data:")):
+            normalized_paths.append(item_str)
+            continue
+        p = Path(os.path.expanduser(item_str))
+        if p.is_dir():
+            found = sorted(list(p.glob("*.png")) + list(p.glob("*.jpg")) + list(p.glob("*.jpeg")) + list(p.glob("*.webp")))
+            normalized_paths.extend([str(f.resolve()) for f in found])
+        elif "*" in item_str or "?" in item_str:
+            matched = sorted(glob.glob(os.path.expanduser(item_str)))
+            normalized_paths.extend([str(Path(m).resolve()) for m in matched])
+        elif p.exists():
+            normalized_paths.append(str(p.resolve()))
+        else:
+            normalized_paths.append(item_str)
+
+    if not normalized_paths:
+        return "Error: No valid image paths provided."
+
+    scripts_dir = os.path.dirname(skill_script)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    try:
+        import vision_tool as vt
+        return vt.query_vision_model(
+            image_inputs=normalized_paths,
+            prompt=prompt,
+            model="gemini-flash",
+            stream=False
+        )
+    except Exception as e:
+        return f"Error analyzing images: {str(e)}"
+
 def get_auth_token():
     if os.environ.get("GEMINI_API_KEY"):
         return os.environ["GEMINI_API_KEY"]
@@ -1877,7 +2008,7 @@ def main():
     parser.add_argument("-m", "--model", help="Model name (e.g. gemini-flash, gemini-pro, gemini-flash-lite)", default=None)
     parser.add_argument("-t", "--thinking", action="store_true", help="Force selection of gemini-pro")
     parser.add_argument("-f", "--file", help="Input text file path", default=None)
-    parser.add_argument("-i", "--image", help="Input image path or folder", default=None)
+    parser.add_argument("-i", "--image", action="append", help="Input image path, folder, or URL (can be specified multiple times)", default=None)
     parser.add_argument("-l", "--list-models", action="store_true", help="List available models from running FastAPI server")
     parser.add_argument("-n", "--non-interactive", action="store_true", help="Run once without keeping interactive session open")
     parser.add_argument("prompt", nargs="*", help="Prompt string")
@@ -1906,9 +2037,38 @@ def main():
             file_text = f.read()
             full_prompt = (file_text + "\n" + full_prompt) if full_prompt else file_text
 
-    if not full_prompt and not sys.stdin.isatty():
-        print("Error: No prompt provided.")
+    # Load image(s) if provided
+    loaded_images = []
+    if args.image:
+        from PIL import Image as PILImage
+        from pathlib import Path
+        for itarget in args.image:
+            p = Path(os.path.expanduser(itarget))
+            if p.is_dir():
+                found = sorted(list(p.glob("*.png")) + list(p.glob("*.jpg")) + list(p.glob("*.jpeg")) + list(p.glob("*.webp")))
+                for fpath in found:
+                    try:
+                        im = PILImage.open(fpath)
+                        im.load()
+                        loaded_images.append(im)
+                    except Exception as e:
+                        print(f"Warning: Could not load image {fpath}: {e}")
+            elif p.is_file():
+                try:
+                    im = PILImage.open(p)
+                    im.load()
+                    loaded_images.append(im)
+                except Exception as e:
+                    print(f"Warning: Could not load image {p}: {e}")
+            else:
+                print(f"Warning: Image path '{itarget}' does not exist.")
+
+    if not full_prompt and not loaded_images and not sys.stdin.isatty():
+        print("Error: No prompt or image provided.")
         sys.exit(1)
+
+    if not full_prompt and loaded_images:
+        full_prompt = "Describe this image in detail and answer any visible questions."
 
     for k in ["all_proxy", "ALL_PROXY", "http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"]:
         os.environ.pop(k, None)
@@ -1936,13 +2096,13 @@ def main():
         api_key=auth_token or "not-needed"
     )
     agent = ToolCallingAgent(
-        tools=[quizmaster, execute_bash, bash_tool, wait_for_quiz_question, select_quiz_option, type_quiz_answer, type_quiz_file],
+        tools=[quizmaster, execute_bash, bash_tool, wait_for_quiz_question, select_quiz_option, type_quiz_answer, type_quiz_file, vision_tool],
         model=model,
         max_steps=1500
     )
 
     if full_prompt:
-        response = agent.run(full_prompt, reset=False)
+        response = agent.run(full_prompt, images=loaded_images or None, reset=False)
         print(response)
 
     auto_exit = args.non_interactive or (os.environ.get("SMOLAGENT_AUTO_EXIT", "0").lower() in ("1", "true", "yes"))
@@ -1951,6 +2111,7 @@ def main():
         console.print("\n[bold green]💬 Conversation session active.[/bold green]")
         console.print("[dim]• Press Enter to send, or paste multiline text directly.[/dim]")
         console.print("[dim]• Press Alt+Enter / Esc+Enter for a new line, or end a line with '\\'.[/dim]")
+        console.print("[dim]• Type '/image <path> <optional prompt>' to inspect images interactively.[/dim]")
         console.print("[dim]• Type 'exit', press Ctrl+D, or press Ctrl+C to quit.[/dim]\n")
 
         prompt_session = None
@@ -2022,8 +2183,46 @@ def main():
                 console.print("[dim]Session closed.[/dim]")
                 os._exit(0)
 
+            step_images = None
+            if user_input.startswith(("/image ", "/img ")):
+                from PIL import Image as PILImage
+                from pathlib import Path
+                tokens = user_input.split()[1:]
+                found_images = []
+                prompt_tokens = []
+                parsing_images = True
+                for tok in tokens:
+                    if parsing_images:
+                        p = Path(os.path.expanduser(tok))
+                        if p.is_dir():
+                            for f in sorted(list(p.glob("*.png")) + list(p.glob("*.jpg")) + list(p.glob("*.jpeg")) + list(p.glob("*.webp"))):
+                                try:
+                                    im = PILImage.open(f)
+                                    im.load()
+                                    found_images.append(im)
+                                except Exception:
+                                    pass
+                            continue
+                        elif p.is_file():
+                            try:
+                                im = PILImage.open(p)
+                                im.load()
+                                found_images.append(im)
+                                continue
+                            except Exception:
+                                pass
+                    parsing_images = False
+                    prompt_tokens.append(tok)
+
+                if found_images:
+                    step_images = found_images
+                    user_input = " ".join(prompt_tokens).strip() or "Describe and compare these images in detail, answering any questions."
+                else:
+                    console.print(f"[bold red]No valid image files found in:[/bold red] {user_input}")
+                    continue
+
             try:
-                response = agent.run(user_input, reset=False)
+                response = agent.run(user_input, images=step_images, reset=False)
                 print(response)
             except KeyboardInterrupt:
                 console.print("\n[yellow]Task cancelled by user (Ctrl+C). Ready for next query or type exit.[/yellow]")
@@ -2048,6 +2247,7 @@ PYTHON_EXEC="$SMOL_DIR/.venv/bin/python"
 PROMPT_TEXT=""
 FILE_ARG=""
 IMAGE_ARG=""
+IMAGE_ARGS=""
 MODEL_ARG=""
 NON_INTERACTIVE_ARG=""
 THINKING_ARG=0
@@ -2060,6 +2260,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
         -i|--image)
+            IMAGE_ARGS="$IMAGE_ARGS -i $2"
             IMAGE_ARG="$2"
             shift 2
             ;;
@@ -2303,25 +2504,9 @@ fi
 if [ $LIST_MODELS -eq 1 ]; then
     exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" -l
 elif [ -n "$TASK_PROMPT" ]; then
-    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG" -i "$IMAGE_ARG" "$TASK_PROMPT"
-    elif [ -n "$MODEL_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG" "$TASK_PROMPT"
-    elif [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -i "$IMAGE_ARG" "$TASK_PROMPT"
-    else
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} "$TASK_PROMPT"
-    fi
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} ${MODEL_ARG:+-m "$MODEL_ARG"} $IMAGE_ARGS "$TASK_PROMPT"
 else
-    if [ -n "$MODEL_ARG" ] && [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG" -i "$IMAGE_ARG"
-    elif [ -n "$MODEL_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -m "$MODEL_ARG"
-    elif [ -n "$IMAGE_ARG" ]; then
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} -i "$IMAGE_ARG"
-    else
-        exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"}
-    fi
+    exec env -u all_proxy -u ALL_PROXY -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY "$PYTHON_EXEC" "$SCRIPT_PATH" ${NON_INTERACTIVE_ARG:+"$NON_INTERACTIVE_ARG"} ${MODEL_ARG:+-m "$MODEL_ARG"} $IMAGE_ARGS
 fi
 AGENT_EOF
 
