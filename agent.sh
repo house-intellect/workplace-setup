@@ -56,19 +56,26 @@ if [ $THINKING_ARG -eq 1 ] && [ -z "$MODEL_ARG" ]; then
     MODEL_ARG="gemini-pro"
 fi
 
+
 if [ $LIST_MODELS -eq 0 ]; then
-    if [ -z "$PROMPT_TEXT" ] && [ ! -t 0 ]; then
-        PROMPT_TEXT=$(cat)
+    if [ -z "$PROMPT_TEXT" ]; then
+        if [ ! -t 0 ]; then
+            # Piped / redirected input
+            PROMPT_TEXT=$(cat | tr -d '\r')
+        elif [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
+            # Interactive terminal: wait for full multiline paste/entry
+            echo "Enter prompt (paste multiline text, press Enter then Ctrl+D to submit):"
+            PROMPT_TEXT=$(cat | tr -d '\r')
+            echo ""
+        fi
     fi
 
     if [ -z "$PROMPT_TEXT" ] && [ -z "$FILE_ARG" ] && [ -z "$IMAGE_ARG" ]; then
-        if [ ! -t 0 ]; then
-            echo "Error: No prompt, text file, or image provided."
-            echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
-            echo "Use '$0 -t' to run with a thinking model and display the thought process."
-            echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
-            exit 1
-        fi
+        echo "Error: No prompt, text file, or image provided."
+        echo "Usage: $0 [-m model] [-t] [-f file] [-i image_or_folder] [-l] \"Your prompt here\""
+        echo "Use '$0 -t' to run with a thinking model and display the thought process."
+        echo "Use '$0 -l' to list available models dynamically from the FastAPI server."
+        exit 1
     fi
 fi
 
