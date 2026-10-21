@@ -7,6 +7,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="${1:-$SCRIPT_DIR/open-webui}"
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
+WEBUI_PORT="${WEBUI_PORT:-8088}"
 
 check_trash_execution() {
     local cwd_phys
@@ -28,6 +30,45 @@ check_trash_execution() {
     esac
 }
 check_trash_execution
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    local ca_candidates=(
+        "/usr/share/ca-certificates/ca-bundle.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/certs/ca-certificates.crt"
+    )
+    for ca_path in "${ca_candidates[@]}"; do
+        if [ -f "$ca_path" ]; then
+            # Verify if bundle contains Kaspersky or local custom CA
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
+
+# Robust port listener check
+check_port() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tulpn "sport = :$port" 2>/dev/null | grep -q LISTEN
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -ti:"$port" >/dev/null 2>&1
+    elif command -v fuser >/dev/null 2>&1; then
+        fuser "$port/tcp" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
 
 # Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
 detect_firefox_doh() {
@@ -64,21 +105,25 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
+        CUSTOM_DOH_URL="https://dns.dns-ai.ru/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.dns-ai.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
+
+# Clean proxy and compiler environment variables
+unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+unset CC CXX CFLAGS LDFLAGS RUSTFLAGS
 
 echo "=== Open WebUI Auto-Installer & Tool Sync ==="
 
 stop_running_stack() {
-    local ports=(8000 8080)
+    local ports=($FASTAPI_PORT $WEBUI_PORT)
     local preserve_fastapi=0
-    if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1; then
-        echo "✓ Gemini-FastAPI is already running and healthy on port 8000. Preserving active instance and rotated cookie sequence."
-        ports=(8080)
+    if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
+        echo "✓ Gemini-FastAPI is already running and healthy on port $FASTAPI_PORT. Preserving active instance and rotated cookie sequence."
+        ports=($WEBUI_PORT)
         preserve_fastapi=1
     fi
     local found_occupying=0
@@ -146,7 +191,7 @@ stop_running_stack() {
         for srv in open-webui.service gemini-fastapi.service; do
             if systemctl --user is-active "$srv" >/dev/null 2>&1; then
                 echo "⚠️  Found active systemd user service: $srv"
-                echo "   -> Stopping $srv so bundle services can manage ports 8000 and 8080..."
+                echo "   -> Stopping $srv so bundle services can manage ports $FASTAPI_PORT and $WEBUI_PORT..."
                 systemctl --user stop "$srv" 2>/dev/null || true
                 found_occupying=1
             fi
@@ -242,9 +287,11 @@ fi
 
 if [ -f "$HOME/.agents/skills/agentic-browser/package.json" ]; then
     if [ ! -d "$HOME/.agents/skills/agentic-browser/node_modules" ]; then
-        if command -v npm >/dev/null 2>&1; then
+        if command -v node >/dev/null 2>&1 && node -e 'process.exit(0)' 2>/dev/null && command -v npm >/dev/null 2>&1; then
             echo "Installing puppeteer dependencies for agentic-browser skill..."
             (cd "$HOME/.agents/skills/agentic-browser" && npm install --no-audit --no-fund 2>/dev/null || true)
+        else
+            echo "⚠️  Node.js runtime not compatible or missing glibc requirements; preserving bundled dependencies for agentic-browser."
         fi
     fi
 fi
@@ -326,14 +373,14 @@ if [ -z "$VENV_DIR" ] && [ -d "$HOME/.venv" ]; then
     VENV_DIR="$HOME/.venv"
 fi
 
-# Find / install Python runtime (Requires >= 3.10)
+# Find / install Python runtime (Requires >= 3.11 for Open WebUI logging.getLevelNamesMapping)
 check_python_version() {
     local py_bin="$1"
     if [ -x "$py_bin" ]; then
         local ver=$("$py_bin" -c 'import sys; print(str(sys.version_info[0]) + "." + str(sys.version_info[1]))' 2>/dev/null || echo "0.0")
         local major=$(echo "$ver" | cut -d. -f1)
         local minor=$(echo "$ver" | cut -d. -f2)
-        if [ "$major" -eq 3 ] && [ "$minor" -ge 10 ]; then
+        if [ "$major" -eq 3 ] && [ "$minor" -ge 11 ]; then
             return 0
         fi
     fi
@@ -341,7 +388,7 @@ check_python_version() {
 }
 
 PY_CMD=""
-for p in python3.12 python3.11 python3.10 python3; do
+for p in python3.12 python3.11 python3; do
     if command -v "$p" >/dev/null 2>&1 && check_python_version "$(command -v "$p")"; then
         PY_CMD="$(command -v "$p")"
         break
@@ -352,13 +399,13 @@ if [ -z "$PY_CMD" ]; then
     if [ -x "$HOME/miniconda3/bin/python3" ] && check_python_version "$HOME/miniconda3/bin/python3"; then
         PY_CMD="$HOME/miniconda3/bin/python3"
     else
-        echo "Python 3.10+ not found on system. Installing local Miniconda (compatible with older GLIBC, no root required)..."
+        echo "Python 3.11+ not found on system. Installing local Miniconda (compatible with older GLIBC, no root required)..."
         rm -rf "$HOME/miniconda3"
         rm -f miniconda.sh
         if [ -f "$SCRIPT_DIR/miniconda.sh" ]; then
             cp "$SCRIPT_DIR/miniconda.sh" miniconda.sh
         else
-            curl -sL "https://repo.anaconda.com/miniconda/Miniconda3-py310_23.5.2-0-Linux-x86_64.sh" -o miniconda.sh
+            curl -sL "https://repo.anaconda.com/miniconda/Miniconda3-py311_23.11.0-2-Linux-x86_64.sh" -o miniconda.sh
         fi
         bash miniconda.sh -b -p "$HOME/miniconda3"
         rm -f miniconda.sh
@@ -368,7 +415,7 @@ fi
 
 if [ -n "$VENV_DIR" ] && [ -f "$VENV_DIR/bin/python" ]; then
     if ! check_python_version "$VENV_DIR/bin/python"; then
-        echo "Existing virtual environment at $VENV_DIR uses an older Python. Recreating with $PY_CMD..."
+        echo "Existing virtual environment at $VENV_DIR uses an older Python (<3.11). Recreating with $PY_CMD..."
         rm -rf "$VENV_DIR"
         "$PY_CMD" -m venv "$VENV_DIR"
     else
@@ -384,15 +431,17 @@ fi
 CHECK_WEBUI_DEPS="import typer, aiohttp, sqlalchemy, aiosqlite, alembic, starlette_compress, starsessions, redis, mcp, google_re2, asgiref, ldap3"
 if ! "$VENV_DIR/bin/python" -c "$CHECK_WEBUI_DEPS" 2>/dev/null; then
     echo "Installing required lightweight Open WebUI dependencies into $VENV_DIR..."
+    unset CC CXX CFLAGS LDFLAGS RUSTFLAGS
     "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null 2>&1 || true
-    "$VENV_DIR/bin/pip" install --retries 5 \
+    "$VENV_DIR/bin/pip" install --prefer-binary --only-binary=:all: pycares==4.4.0 tiktoken 2>/dev/null || true
+    "$VENV_DIR/bin/pip" install --prefer-binary --retries 5 \
         typer==0.25.1 aiohttp==3.13.5 sqlalchemy==2.0.50 aiosqlite==0.22.1 alembic==1.18.4 \
         argon2-cffi==25.1.0 authlib==1.7.2 bcrypt==5.0.0 brotli==1.2.0 itsdangerous==2.2.0 \
         joserfc==1.7.4 "pyjwt[crypto]==2.13.0" python-socketio==5.16.2 starlette-compress==1.7.1 \
         "starsessions[redis]==2.2.1" aiocache==0.12.3 aiofiles==25.1.0 greenlet redis==8.0.1 \
         async-timeout==5.0.1 pycrdt python-dateutil pytz fake-useragent ftfy chardet \
         Markdown beautifulsoup4 lxml validators psutil rank-bm25 python-mimeparse python-multipart \
-        aiodns==3.6.1 hiredis==3.4.0 langchain-core langchain-text-splitters langchain-classic \
+        aiodns==3.2.0 pycares==4.4.0 hiredis==3.4.0 langchain-core langchain-text-splitters langchain-classic \
         black tiktoken pillow "mcp==1.27.2" google-re2 asgiref azure-identity ldap3==2.9.1
 fi
 
@@ -471,7 +520,7 @@ EOF_LAUNCHER
 chmod +x "$VENV_DIR/bin/open-webui"
 echo "✓ Configured Open WebUI launcher: $VENV_DIR/bin/open-webui"
 
-# 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.bezmezhau.com) are Present
+# 3. Ensure Gemini-FastAPI Bridge, Cookie Fallbacks & Custom DNS (dns.dns-ai.ru) are Present
 FASTAPI_DIR="$(dirname "$TARGET_DIR")/gemini-fastapi"
 if [ -d "$SCRIPT_DIR/Gemini-FastAPI" ] && [ -f "$SCRIPT_DIR/Gemini-FastAPI/run.py" ] && [ "$(realpath "$SCRIPT_DIR/Gemini-FastAPI" 2>/dev/null)" != "$(realpath "$FASTAPI_DIR" 2>/dev/null)" ]; then
     echo "Found pre-downloaded Gemini-FastAPI in $SCRIPT_DIR/Gemini-FastAPI. Syncing to $FASTAPI_DIR..."
@@ -513,7 +562,7 @@ if fastapi_dir.exists():
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
             if isinstance(doh_endpoint, str):
                 doh_endpoint = doh_endpoint.encode()
             curl_opts[CurlOpt.DOH_URL] = doh_endpoint
@@ -526,7 +575,7 @@ except Exception:
 """
             app_init.write_text(doh_code + atxt)
         elif "xbox-dns.ru" in atxt or "dns.comss.one" in atxt:
-            atxt = atxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
+            atxt = atxt.replace("https://xbox-dns.ru/dns-query", "https://dns.dns-ai.ru/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.dns-ai.ru/dns-query")
             app_init.write_text(atxt)
 
     # 1.2 Patch app/services/client.py (GeminiClientWrapper curl_options & AccountStatus check)
@@ -541,7 +590,7 @@ except Exception:
         super().__init__(**kwargs)
         self.id = client_id
         import os
-        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
         if isinstance(doh_endpoint, str):
             doh_endpoint = doh_endpoint.encode()
         if secure_1psidcc := kwargs.get("secure_1psidcc"):
@@ -639,7 +688,7 @@ except Exception:
                 """try:
             from curl_cffi import CurlOpt
             import os
-            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
             if isinstance(_doh, str):
                 _doh = _doh.encode()
             h_opts = {CurlOpt.DOH_URL: _doh}
@@ -649,7 +698,7 @@ except Exception:
             )
             helper_file.write_text(htxt)
         elif "xbox-dns.ru" in htxt or "dns.comss.one" in htxt:
-            htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
+            htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.dns-ai.ru/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.dns-ai.ru/dns-query")
             helper_file.write_text(htxt)
 
     # 1.4 Patch app/services/pool.py (Rookiepy multi-browser extraction, prioritize Firefox, DoH)
@@ -738,7 +787,7 @@ except Exception:
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -788,7 +837,7 @@ except Exception:
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
                 if isinstance(doh_url, str):
                     doh_url = doh_url.encode()
                 # Prioritize Firefox first
@@ -1006,7 +1055,7 @@ for p in [
     if os.path.isdir(p):
         sp_dirs.add(p)
 
-doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
 
 for sp in sorted(sp_dirs):
     # StrEnum compatibility
@@ -1200,6 +1249,13 @@ else
     echo "Ollama not detected on system: disabling Ollama in Open WebUI config to avoid connection errors."
 fi
 
+# Detect Strata presence on system
+STRATA_PRESENT="false"
+if pgrep -f "strata|serve/server\.py" >/dev/null 2>&1 || curl --noproxy "*" --max-time 1 -s -f "http://127.0.0.1:8081/v1/models" >/dev/null 2>&1; then
+    STRATA_PRESENT="true"
+    echo "Strata detected on system: will auto-configure Strata endpoints and register models in Open WebUI."
+fi
+
 for DB_PATH in "${FOUND_DBS[@]}"; do
     echo "Syncing tools, configs, and models into: $DB_PATH"
     "$VENV_DIR/bin/python" - "$DB_PATH" "$OLLAMA_PRESENT" << 'PY_EOF'
@@ -1207,6 +1263,10 @@ import sqlite3
 import json
 import os
 import sys
+import glob
+import re
+import urllib.request
+import urllib.error
 
 db_path = sys.argv[1]
 ollama_present = sys.argv[2] == "true"
@@ -1462,7 +1522,7 @@ cursor.execute("""
         updated_at=strftime('%s', 'now')
 """, (owner_id, browser_content, json.dumps(browser_specs), json.dumps(browser_meta), json.dumps(browser_valves)))
 
-# Configure Open WebUI endpoint and default model to Gemini-FastAPI
+# Configure Open WebUI endpoints and models (Ollama, Gemini-FastAPI, Strata)
 try:
     if ollama_present:
         cursor.execute("""
@@ -1477,6 +1537,166 @@ try:
             ON CONFLICT(key) DO UPDATE SET value='false', updated_at=strftime('%s', 'now')
         """)
 
+    # 1. Detect Gemini-FastAPI
+    gemini_present = False
+    gemini_models = []
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8000/v1/models", headers={"User-Agent": "OpenWebUI-Installer"})
+        with urllib.request.urlopen(req, timeout=1.5) as resp:
+            if resp.status == 200:
+                body = json.loads(resp.read().decode("utf-8"))
+                for item in body.get("data", []):
+                    if "id" in item:
+                        gemini_models.append(item["id"])
+                if gemini_models:
+                    gemini_present = True
+    except Exception:
+        pass
+
+    if not gemini_present:
+        for gpath in [os.path.expanduser("~/local-ai-stack/gemini-fastapi"), os.path.expanduser("~/PythonProjects/workplace-setup/gemini-fastapi")]:
+            if os.path.isdir(gpath):
+                gemini_present = True
+                gemini_models = ["gemini-flash", "gemini-pro", "gemini-flash-lite"]
+                break
+
+    # 2. Detect Strata LLM Server installations, configs, and active endpoints
+    strata_endpoints = {}  # uri -> list of model_ids
+    found_configs = []
+
+    search_patterns = [
+        "/media/*/*/Strata*/*.json",
+        "/media/*/*/Strata*/config*.json",
+        "/media/*/*/backup/Strata*/*.json",
+        os.path.expanduser("~/Strata*/*.json"),
+        os.path.expanduser("~/.config/strata*/**/*.json"),
+        os.path.expanduser("~/local-ai-stack/*strata*.json"),
+        "/opt/*strata*/*.json",
+    ]
+    for pattern in search_patterns:
+        for f in glob.glob(pattern, recursive=True):
+            if any(skip in f for skip in ["/bench/", "/results/", "/tests/", "/test/", "/samples/"]):
+                continue
+            try:
+                if os.path.isfile(f) and os.path.getsize(f) < 500000:
+                    with open(f, 'r', encoding='utf-8') as jf:
+                        data = json.load(jf)
+                        if isinstance(data, dict):
+                            is_strata = False
+                            if "exe" in data and "strata" in str(data["exe"]).lower():
+                                is_strata = True
+                            if "engine" in data and "strata" in str(data["engine"]).lower():
+                                is_strata = True
+                            if "model_name" in data and ("strata" in f.lower() or is_strata):
+                                is_strata = True
+                            if is_strata:
+                                found_configs.append((f, data))
+            except Exception:
+                pass
+
+    running_ports = set()
+    try:
+        for pid in os.listdir("/proc"):
+            if not pid.isdigit():
+                continue
+            try:
+                with open(f"/proc/{pid}/cmdline", "rb") as cf:
+                    cmd = cf.read().replace(b"\x00", b" ").decode("utf-8", errors="ignore")
+                    if "strata" in cmd.lower() or "serve/server.py" in cmd:
+                        port_match = re.search(r"--port\s+(\d+)", cmd)
+                        if port_match:
+                            running_ports.add(int(port_match.group(1)))
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    candidate_ports = set(running_ports)
+    candidate_ports.add(8081)
+    for f, cfg in found_configs:
+        if "port" in cfg and isinstance(cfg["port"], int):
+            candidate_ports.add(cfg["port"])
+
+    for port in sorted(candidate_ports):
+        uri = f"http://localhost:{port}/v1"
+        probe_url = f"http://127.0.0.1:{port}/v1/models"
+        try:
+            req = urllib.request.Request(probe_url, headers={"User-Agent": "OpenWebUI-Installer"})
+            with urllib.request.urlopen(req, timeout=1.5) as resp:
+                if resp.status == 200:
+                    body = json.loads(resp.read().decode("utf-8"))
+                    models = []
+                    for item in body.get("data", []):
+                        if "id" in item:
+                            models.append(item["id"])
+                    if models:
+                        strata_endpoints[uri] = models
+        except Exception:
+            pass
+
+    # If any config had a port not currently responding, still register it from config if binary or weights exist
+    for f, cfg in found_configs:
+        port = cfg.get("port", 8081)
+        uri = f"http://localhost:{port}/v1"
+        if uri not in strata_endpoints:
+            exe = cfg.get("exe", "")
+            if os.path.exists(exe):
+                m_name = cfg.get("model_name")
+                if m_name:
+                    strata_endpoints[uri] = [m_name]
+
+    # 3. Assemble OpenAI Base URLs and Configurations
+    openai_base_urls = []
+    openai_keys = []
+    openai_api_configs = {}
+    endpoint_idx = 0
+
+    if gemini_present:
+        openai_base_urls.append("http://localhost:8000/v1")
+        openai_keys.append("not-needed")
+        openai_api_configs[str(endpoint_idx)] = {
+            "enable": True,
+            "tags": [],
+            "prefix_id": "",
+            "model_ids": gemini_models if gemini_models else ["gemini-flash", "gemini-pro", "gemini-flash-lite"],
+            "connection_type": "local",
+            "auth_type": "none",
+            "passthrough_params": []
+        }
+        endpoint_idx += 1
+        print(f"✓ Configured Gemini-FastAPI endpoint at http://localhost:8000/v1 (models: {gemini_models})")
+
+    for s_uri, s_models in strata_endpoints.items():
+        openai_base_urls.append(s_uri)
+        openai_keys.append("not-needed")
+        openai_api_configs[str(endpoint_idx)] = {
+            "enable": True,
+            "tags": [],
+            "prefix_id": "strata",
+            "model_ids": s_models,
+            "connection_type": "local",
+            "auth_type": "none",
+            "passthrough_params": []
+        }
+        endpoint_idx += 1
+        print(f"✓ Configured Strata LLM Server endpoint at {s_uri} (prefix: strata, models: {s_models})")
+
+    # Fallback if no local endpoint found
+    if not openai_base_urls:
+        openai_base_urls = ["http://localhost:8000/v1"]
+        openai_keys = ["not-needed"]
+        openai_api_configs = {
+            "0": {
+                "enable": True,
+                "tags": [],
+                "prefix_id": "",
+                "model_ids": ["gemini-flash", "gemini-pro", "gemini-flash-lite"],
+                "connection_type": "local",
+                "auth_type": "none",
+                "passthrough_params": []
+            }
+        }
+
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
         VALUES ('openai.enable', 'true', strftime('%s', 'now'))
@@ -1484,24 +1704,31 @@ try:
     """)
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
-        VALUES ('openai.api_base_urls', '["http://localhost:8000/v1"]', strftime('%s', 'now'))
-        ON CONFLICT(key) DO UPDATE SET value='["http://localhost:8000/v1"]', updated_at=strftime('%s', 'now')
-    """)
+        VALUES ('openai.api_base_urls', ?, strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=strftime('%s', 'now')
+    """, (json.dumps(openai_base_urls),))
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
-        VALUES ('openai.api_keys', '["not-needed"]', strftime('%s', 'now'))
-        ON CONFLICT(key) DO UPDATE SET value='["not-needed"]', updated_at=strftime('%s', 'now')
-    """)
+        VALUES ('openai.api_keys', ?, strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=strftime('%s', 'now')
+    """, (json.dumps(openai_keys),))
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
-        VALUES ('openai.api_configs', '{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-flash", "gemini-pro", "gemini-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', strftime('%s', 'now'))
-        ON CONFLICT(key) DO UPDATE SET value='{"0": {"enable": true, "tags": [], "prefix_id": "", "model_ids": ["gemini-flash", "gemini-pro", "gemini-flash-lite"], "connection_type": "local", "auth_type": "none", "passthrough_params": []}}', updated_at=strftime('%s', 'now')
-    """)
+        VALUES ('openai.api_configs', ?, strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=strftime('%s', 'now')
+    """, (json.dumps(openai_api_configs),))
+
+    default_ui_model = "gemini-flash"
+    if not gemini_present and strata_endpoints:
+        first_ep_models = list(strata_endpoints.values())[0]
+        if first_ep_models:
+            default_ui_model = first_ep_models[0]
+
     cursor.execute("""
         INSERT INTO config (key, value, updated_at)
-        VALUES ('ui.default_models', '"gemini-flash"', strftime('%s', 'now'))
-        ON CONFLICT(key) DO UPDATE SET value='"gemini-flash"', updated_at=strftime('%s', 'now')
-    """)
+        VALUES ('ui.default_models', ?, strftime('%s', 'now'))
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=strftime('%s', 'now')
+    """, (json.dumps(default_ui_model),))
 
     # Impose max request frequency: disable concurrent auto-tasks in Open WebUI
     # (title, tags, follow_up, autocomplete) that flood the Gemini Web proxy with parallel requests
@@ -1564,63 +1791,96 @@ try:
     except Exception as ue:
         print(f"Notice: User settings update returned {ue}")
 
-    meta_flash = json.dumps({
-        "profile_image_url": "/static/favicon.png",
-        "description": "3.8 Flash - Fast multimodal all-around model",
-        "capabilities": {
-            "vision": True, "file_upload": True, "web_search": True,
-            "code_interpreter": True, "terminal": True, "builtin_tools": True
-        },
-        "toolIds": default_tools
-    })
-    meta_lite = json.dumps({
-        "profile_image_url": "/static/favicon.png",
-        "description": "3.5 Flash-Lite - Fastest answers with lightweight inference",
-        "capabilities": {
-            "vision": True, "file_upload": True, "web_search": True,
-            "code_interpreter": True, "terminal": True, "builtin_tools": True
-        },
-        "toolIds": default_tools
-    })
-    meta_pro = json.dumps({
-        "profile_image_url": "/static/favicon.png",
-        "description": "3.1 Pro - Flagship advanced reasoning and complex problem solving",
-        "capabilities": {
-            "vision": True, "file_upload": True, "web_search": True,
-            "code_interpreter": True, "terminal": True, "builtin_tools": True
-        },
-        "toolIds": default_tools
-    })
+    registered_model_ids = []
 
-    models_to_register = [
-        ("gemini-flash", "Gemini Flash", None, meta_flash),
-        ("gemini-pro", "Gemini Pro", None, meta_pro),
-        ("gemini-flash-lite", "Gemini Flash-Lite", None, meta_lite),
-    ]
+    # Register Gemini models if present
+    if gemini_present:
+        meta_flash = json.dumps({
+            "profile_image_url": "/static/favicon.png",
+            "description": "3.8 Flash - Fast multimodal all-around model",
+            "capabilities": {
+                "vision": True, "file_upload": True, "web_search": True,
+                "code_interpreter": True, "terminal": True, "builtin_tools": True
+            },
+            "toolIds": default_tools
+        })
+        meta_lite = json.dumps({
+            "profile_image_url": "/static/favicon.png",
+            "description": "3.5 Flash-Lite - Fastest answers with lightweight inference",
+            "capabilities": {
+                "vision": True, "file_upload": True, "web_search": True,
+                "code_interpreter": True, "terminal": True, "builtin_tools": True
+            },
+            "toolIds": default_tools
+        })
+        meta_pro = json.dumps({
+            "profile_image_url": "/static/favicon.png",
+            "description": "3.1 Pro - Flagship advanced reasoning and complex problem solving",
+            "capabilities": {
+                "vision": True, "file_upload": True, "web_search": True,
+                "code_interpreter": True, "terminal": True, "builtin_tools": True
+            },
+            "toolIds": default_tools
+        })
 
-    for m_id, m_name, base_id, m_meta in models_to_register:
-        cursor.execute("""
-            INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
-            VALUES (?, ?, ?, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
-            ON CONFLICT(id) DO UPDATE SET
-                name=excluded.name,
-                base_model_id=excluded.base_model_id,
-                meta=excluded.meta,
-                is_active=1,
-                updated_at=strftime('%s', 'now')
-        """, (m_id, owner_id, base_id, m_name, m_meta))
+        models_to_register = [
+            ("gemini-flash", "Gemini Flash", None, meta_flash),
+            ("gemini-pro", "Gemini Pro", None, meta_pro),
+            ("gemini-flash-lite", "Gemini Flash-Lite", None, meta_lite),
+        ]
 
-    # Remove all ghost model names and disguised twins
-    cursor.execute("""
-        DELETE FROM model WHERE id NOT IN ('gemini-flash', 'gemini-pro', 'gemini-flash-lite');
-    """)
+        for m_id, m_name, base_id, m_meta in models_to_register:
+            cursor.execute("""
+                INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
+                VALUES (?, ?, ?, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    base_model_id=excluded.base_model_id,
+                    meta=excluded.meta,
+                    is_active=1,
+                    updated_at=strftime('%s', 'now')
+            """, (m_id, owner_id, base_id, m_name, m_meta))
+            registered_model_ids.append(m_id)
+
+    # Register Strata models
+    for s_uri, s_models in strata_endpoints.items():
+        for m_id in s_models:
+            full_model_id = f"strata.{m_id}"
+            clean_name = m_id.replace(":", " ").replace("-", " ").title()
+            display_name = f"{clean_name} (Strata)"
+            meta_strata = json.dumps({
+                "profile_image_url": "/static/favicon.png",
+                "description": f"Strata High-Performance Engine - {m_id} local inference",
+                "capabilities": {
+                    "vision": False, "file_upload": True, "web_search": True,
+                    "code_interpreter": True, "terminal": True, "builtin_tools": True
+                },
+                "toolIds": default_tools
+            })
+            cursor.execute("""
+                INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
+                VALUES (?, ?, ?, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
+                ON CONFLICT(id) DO UPDATE SET
+                    name=excluded.name,
+                    base_model_id=excluded.base_model_id,
+                    meta=excluded.meta,
+                    is_active=1,
+                    updated_at=strftime('%s', 'now')
+            """, (full_model_id, owner_id, None, display_name, meta_strata))
+            registered_model_ids.append(full_model_id)
+            registered_model_ids.append(m_id)
+
+    # Remove ghost models while preserving all registered Gemini and Strata models
+    if registered_model_ids:
+        placeholders = ",".join(["?"] * len(registered_model_ids))
+        cursor.execute(f"DELETE FROM model WHERE id NOT IN ({placeholders})", registered_model_ids)
 
 except Exception as e:
     print(f"Notice: Config / Model table update returned {e}")
 
 conn.commit()
 conn.close()
-print("Successfully registered native_bash_tool, agentic_browser_tool, and Gemini-FastAPI true models in DB!")
+print("Successfully registered native_bash_tool, agentic_browser_tool, and local endpoints in DB!")
 PY_EOF
 done
 

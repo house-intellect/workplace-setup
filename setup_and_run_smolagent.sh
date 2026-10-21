@@ -9,9 +9,34 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STACK_DIR="$HOME/local-ai-stack"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 SMOL_DIR="$STACK_DIR/tool-calling-test"
-FASTAPI_PORT=8000
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
+WEBUI_PORT="${WEBUI_PORT:-8088}"
 REAL_HOME="$HOME"
 SKILL_DIR="$HOME/.agents/skills/agentic-browser"
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    local ca_candidates=(
+        "/usr/share/ca-certificates/ca-bundle.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/certs/ca-certificates.crt"
+    )
+    for ca_path in "${ca_candidates[@]}"; do
+        if [ -f "$ca_path" ]; then
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
 
 check_trash_execution() {
     local cwd_phys
@@ -69,40 +94,40 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
+        CUSTOM_DOH_URL="https://dns.dns-ai.ru/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.dns-ai.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
 echo "=== Smolagent & Skills One-Click Setup (Gemini-FastAPI / Gemini 3.7 Flash) ==="
 
 stop_running_stack() {
-    local ports=(8000 8080)
+    local ports=($FASTAPI_PORT $WEBUI_PORT)
     local preserve_fastapi=0
-    if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:8000/v1/models" >/dev/null 2>&1; then
+    if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$FASTAPI_PORT/v1/models" >/dev/null 2>&1; then
         local probe_resp http_code body
-        probe_resp=$(curl --noproxy "*" --max-time 15 -s -w "\nHTTP_STATUS:%{http_code}" -X POST "http://127.0.0.1:8000/v1/chat/completions" \
+        probe_resp=$(curl --noproxy "*" --max-time 15 -s -w "\nHTTP_STATUS:%{http_code}" -X POST "http://127.0.0.1:$FASTAPI_PORT/v1/chat/completions" \
             -H "Content-Type: application/json" \
             -d '{"model": "gemini-flash", "messages": [{"role": "user", "content": "ping"}], "max_tokens": 1}' 2>/dev/null || true)
         http_code=$(echo "$probe_resp" | grep "HTTP_STATUS:" | cut -d':' -f2)
         body=$(echo "$probe_resp" | sed '/HTTP_STATUS:/d')
 
         if echo "$body" | grep -q '"choices"'; then
-            echo "✓ Gemini-FastAPI is authenticated and healthy on port 8000. Preserving active instance and rotated cookie sequence."
-            ports=(8080)
+            echo "✓ Gemini-FastAPI is authenticated and healthy on port $FASTAPI_PORT. Preserving active instance and rotated cookie sequence."
+            ports=($WEBUI_PORT)
             preserve_fastapi=1
         elif [ -z "$http_code" ] || [ "$http_code" = "000" ]; then
-            echo "⚠️  Gemini-FastAPI on port 8000 responded slowly to probe, but HTTP server is running. Preserving active instance."
-            ports=(8080)
+            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT responded slowly to probe, but HTTP server is running. Preserving active instance."
+            ports=($WEBUI_PORT)
             preserve_fastapi=1
         elif [ "$http_code" = "401" ] || [ "$http_code" = "403" ] || \
              echo "$body" | grep -iqE '("status":\s*(401|403|1016|1002)|unauthenticated|guest mode|guest session|not available for use|is not available for use|autherror|login_required)'; then
-            echo "⚠️  Gemini-FastAPI on port 8000 returned unauthenticated / Guest mode error (HTTP $http_code). Stopping instance to allow fresh browser cookie extraction..."
+            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT returned unauthenticated / Guest mode error (HTTP $http_code). Stopping instance to allow fresh browser cookie extraction..."
         else
-            echo "⚠️  Gemini-FastAPI on port 8000 returned status $http_code. Preserving active instance."
-            ports=(8080)
+            echo "⚠️  Gemini-FastAPI on port $FASTAPI_PORT returned status $http_code. Preserving active instance."
+            ports=($WEBUI_PORT)
             preserve_fastapi=1
         fi
     fi
@@ -171,7 +196,7 @@ stop_running_stack() {
         for srv in open-webui.service gemini-fastapi.service; do
             if systemctl --user is-active "$srv" >/dev/null 2>&1; then
                 echo "⚠️  Found active systemd user service: $srv"
-                echo "   -> Stopping $srv so bundle services can manage ports 8000 and 8080..."
+                echo "   -> Stopping $srv so bundle services can manage ports $FASTAPI_PORT and $WEBUI_PORT..."
                 systemctl --user stop "$srv" 2>/dev/null || true
                 found_occupying=1
             fi
@@ -185,7 +210,7 @@ stop_running_stack() {
     fi
 
     if [ "$found_occupying" -eq 0 ]; then
-        echo "✓ Required ports (8000, 8080) are free. No conflicting processes detected."
+        echo "✓ Required ports ($FASTAPI_PORT, $WEBUI_PORT) are free. No conflicting processes detected."
         return 0
     fi
 
@@ -337,8 +362,9 @@ PIP_EXEC="$VENV_DIR/bin/pip"
 CHECK_DEPS="import smolagents, openai, PIL, pydantic, requests, gemini_webapi, rookiepy, fastapi, uvicorn, lmdb, pydantic_settings, prompt_toolkit; from smolagents import OpenAIServerModel"
 if ! "$PYTHON_EXEC" -c "$CHECK_DEPS" 2>/dev/null; then
     echo "Installing smolagents, gemini-webapi, rookiepy, and server dependencies..."
+    unset CC CXX CFLAGS LDFLAGS RUSTFLAGS
     "$PIP_EXEC" install --upgrade pip 2>/dev/null || true
-    "$PIP_EXEC" install "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi>=2.1.1" uvicorn fastapi lmdb pydantic-settings pyyaml prompt_toolkit
+    "$PIP_EXEC" install --prefer-binary "smolagents[openai]" openai pillow pydantic requests rookiepy "gemini-webapi>=2.1.1" uvicorn fastapi lmdb pydantic-settings pyyaml prompt_toolkit
 fi
 
 
@@ -395,7 +421,7 @@ if app_init.exists():
             curl_opts = {}
             kwargs["curl_options"] = curl_opts
         if isinstance(curl_opts, dict) and CurlOpt.DOH_URL not in curl_opts:
-            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+            doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
             if isinstance(doh_endpoint, str):
                 doh_endpoint = doh_endpoint.encode()
             curl_opts[CurlOpt.DOH_URL] = doh_endpoint
@@ -408,7 +434,7 @@ except Exception:
 """
         app_init.write_text(doh_code + txt)
     elif "xbox-dns.ru" in txt or "dns.comss.one" in txt:
-        txt = txt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
+        txt = txt.replace("https://xbox-dns.ru/dns-query", "https://dns.dns-ai.ru/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.dns-ai.ru/dns-query")
         app_init.write_text(txt)
 
 # 2. Patch app/services/client.py (GeminiClientWrapper curl_options & AccountStatus check)
@@ -423,7 +449,7 @@ if wrap_file.exists():
         super().__init__(**kwargs)
         self.id = client_id
         import os
-        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+        doh_endpoint = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
         if isinstance(doh_endpoint, str):
             doh_endpoint = doh_endpoint.encode()
         if secure_1psidcc := kwargs.get("secure_1psidcc"):
@@ -521,7 +547,7 @@ if helper_file.exists():
             """try:
             from curl_cffi import CurlOpt
             import os
-            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+            _doh = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
             if isinstance(_doh, str):
                 _doh = _doh.encode()
             h_opts = {CurlOpt.DOH_URL: _doh}
@@ -531,7 +557,7 @@ if helper_file.exists():
         )
         helper_file.write_text(htxt)
     elif "xbox-dns.ru" in htxt or "dns.comss.one" in htxt:
-        htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
+        htxt = htxt.replace("https://xbox-dns.ru/dns-query", "https://dns.dns-ai.ru/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.dns-ai.ru/dns-query")
         helper_file.write_text(htxt)
 
 # 4. Patch app/services/pool.py (Rookiepy multi-browser extraction, fallback, DoH)
@@ -620,7 +646,7 @@ if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_te
             raise ValueError("No Gemini clients configured and auto-extraction failed.")
 
         import os
-        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+        doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
         if isinstance(doh_url, str):
             doh_url = doh_url.encode()
 
@@ -670,7 +696,7 @@ if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_te
                 import rookiepy
                 import os
                 from curl_cffi import CurlOpt
-                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+                doh_url = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
                 if isinstance(doh_url, str):
                     doh_url = doh_url.encode()
                 for b_name in ["firefox", "chrome", "chromium", "brave"]:
@@ -746,7 +772,7 @@ if pool_file.exists() and "reload_cookies_from_browser" not in pool_file.read_te
     if "class GeminiClientPool" in ptxt:
         ptxt = re.sub(r'class GeminiClientPool\(metaclass=Singleton\):.*?async def _ensure_client_ready', new_pool_code.strip() + "\n\n    async def _ensure_client_ready", ptxt, flags=re.DOTALL)
     if "xbox-dns.ru" in ptxt or "dns.comss.one" in ptxt:
-        ptxt = ptxt.replace("https://xbox-dns.ru/dns-query", "https://dns.bezmezhau.com/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.bezmezhau.com/dns-query")
+        ptxt = ptxt.replace("https://xbox-dns.ru/dns-query", "https://dns.dns-ai.ru/dns-query").replace("https://dns.comss.one/dns-query", "https://dns.dns-ai.ru/dns-query")
     pool_file.write_text(ptxt)
 
 # 5. Ensure config/config.yaml exists and does not hold expired dummy credentials
@@ -902,7 +928,7 @@ for p in [
     if os.path.isdir(p):
         sp_dirs.add(p)
 
-doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.bezmezhau.com/dns-query"))
+doh_url_str = os.environ.get("CUSTOM_DOH_URL", os.environ.get("GEMINI_DOH_URL", "https://dns.dns-ai.ru/dns-query"))
 
 for sp in sorted(sp_dirs):
     # 0. Patch gemini_webapi/__init__.py for global BaseSession DoH
@@ -1181,9 +1207,13 @@ if [ -d "$SCRIPT_DIR/vision" ]; then
     chmod +x "$VISION_DIR/scripts/vision_tool.py" 2>/dev/null || true
 fi
 if [ ! -d "$SKILL_DIR/node_modules" ]; then
-    if command -v npm >/dev/null 2>&1; then
-        (cd "$SKILL_DIR" && npm init -y >/dev/null 2>&1 || true)
-        (cd "$SKILL_DIR" && npm install puppeteer --no-audit --no-fund 2>/dev/null || true)
+    if command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+        if node -e 'process.exit(0)' >/dev/null 2>&1; then
+            (cd "$SKILL_DIR" && npm init -y >/dev/null 2>&1 || true)
+            (cd "$SKILL_DIR" && npm install puppeteer --no-audit --no-fund 2>/dev/null || true)
+        else
+            echo "Notice: Node.js runtime is incompatible with the system C library (GLIBC); skipping puppeteer install."
+        fi
     fi
 fi
 
@@ -2236,12 +2266,32 @@ PY_EOF
 
 cat << 'AGENT_EOF' > "$HOME/agent.sh"
 #!/bin/sh
-FASTAPI_PORT=8000
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
 STACK_DIR="$HOME/local-ai-stack"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 SMOL_DIR="$STACK_DIR/tool-calling-test"
 SCRIPT_PATH="$SMOL_DIR/smolagent.py"
 PYTHON_EXEC="$SMOL_DIR/.venv/bin/python"
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    ca_candidates="/usr/share/ca-certificates/ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt"
+    for ca_path in $ca_candidates; do
+        if [ -f "$ca_path" ]; then
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
 
 # 1. Capture prompt, text files, image, and model arguments (POSIX compatible)
 PROMPT_TEXT=""
@@ -2330,7 +2380,7 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.dns-ai.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
@@ -2512,9 +2562,9 @@ AGENT_EOF
 
 chmod +x "$HOME/agent.sh"
 
-# Ensure Open WebUI is started if available
+## Ensure Open WebUI is started if available
 if [ -z "$SKIP_WEBUI_START" ] && ([ -d "$STACK_DIR/open-webui" ] || [ -d "$SCRIPT_DIR/open-webui" ] || (command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service) || command -v open-webui >/dev/null 2>&1); then
-    echo "Starting Open WebUI service on http://127.0.0.1:8080..."
+    echo "Starting Open WebUI service on http://127.0.0.1:$WEBUI_PORT..."
     started=0
     if command -v systemctl >/dev/null 2>&1 && systemctl --user list-unit-files open-webui.service 2>/dev/null | grep -q open-webui.service; then
         echo "   -> Starting via systemd user service (open-webui.service)..."
@@ -2525,7 +2575,7 @@ if [ -z "$SKIP_WEBUI_START" ] && ([ -d "$STACK_DIR/open-webui" ] || [ -d "$SCRIP
         fi
     fi
 
-    if [ $started -eq 0 ] && ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
+    if [ $started -eq 0 ] && ! curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$WEBUI_PORT/health" >/dev/null 2>&1; then
         WEBUI_BIN=""
         WEBUI_DIR="$STACK_DIR/open-webui"
         if [ -x "$STACK_DIR/open-webui/.venv/bin/open-webui" ]; then
@@ -2542,10 +2592,10 @@ if [ -z "$SKIP_WEBUI_START" ] && ([ -d "$STACK_DIR/open-webui" ] || [ -d "$SCRIP
             (
                 cd "$WEBUI_DIR" 2>/dev/null || cd "$HOME"
                 export HOST="127.0.0.1"
-                export PORT="8080"
+                export PORT="$WEBUI_PORT"
                 export WEBUI_HOST="127.0.0.1"
-                export WEBUI_PORT="8080"
-                nohup "$WEBUI_BIN" serve --host 127.0.0.1 --port 8080 > "$STACK_DIR/open-webui.log" 2>&1 &
+                export WEBUI_PORT="$WEBUI_PORT"
+                nohup "$WEBUI_BIN" serve --host 127.0.0.1 --port "$WEBUI_PORT" > "$STACK_DIR/open-webui.log" 2>&1 &
             )
         elif [ -f "$STACK_DIR/start-ai-stack.sh" ]; then
             nohup bash "$STACK_DIR/start-ai-stack.sh" > "$STACK_DIR/open-webui.log" 2>&1 &
@@ -2553,8 +2603,8 @@ if [ -z "$SKIP_WEBUI_START" ] && ([ -d "$STACK_DIR/open-webui" ] || [ -d "$SCRIP
     fi
 
     for i in $(seq 1 30); do
-        if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:8080/health" >/dev/null 2>&1; then
-            echo "✓ Open WebUI is running and healthy on http://127.0.0.1:8080"
+        if curl --noproxy "*" --max-time 2 -s -f "http://127.0.0.1:$WEBUI_PORT/health" >/dev/null 2>&1; then
+            echo "✓ Open WebUI is running and healthy on http://127.0.0.1:$WEBUI_PORT"
             break
         fi
         sleep 1
@@ -2564,7 +2614,7 @@ fi
 echo ""
 echo "=== Setup Complete! ==="
 echo "You can now run agent queries using:  ~/agent.sh \"Your prompt here\""
-echo "Open WebUI is available at:           http://127.0.0.1:8080"
+echo "Open WebUI is available at:           http://127.0.0.1:$WEBUI_PORT"
 echo ""
 
 echo "=================================================================="
@@ -2578,7 +2628,7 @@ DIAG_PROMPT="Analyze the AI stack installation status based on this system summa
 - DNS Spoof: $(cat ~/.local/share/gemini-spoof/hosts 2>/dev/null | grep gemini.google.com | head -n1 || echo 'Active')
 - Gemini-FastAPI: $(curl --noproxy '*' --max-time 3 -s http://127.0.0.1:$FASTAPI_PORT/health 2>/dev/null || echo 'OK')
 - Available models: $(curl --noproxy '*' --max-time 3 -s http://127.0.0.1:$FASTAPI_PORT/v1/models 2>/dev/null | grep -o '\"id\": *\"[^\"]*\"' | head -n 6 | tr '\n' ' ' || echo 'Models loaded')
-- Open WebUI: $(curl --noproxy '*' --max-time 3 -s http://127.0.0.1:8080/health 2>/dev/null || echo 'Starting/Ready')
+- Open WebUI: $(curl --noproxy '*' --max-time 3 -s http://127.0.0.1:$WEBUI_PORT/health 2>/dev/null || echo 'Starting/Ready')
 
 Summarize the operational readiness of the setup in 3 concise bullet points:
 1. Backend & DNS spoof status

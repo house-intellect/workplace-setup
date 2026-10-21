@@ -13,8 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STACK_DIR="${LOCAL_AI_STACK_DIR:-$HOME/local-ai-stack}"
 FASTAPI_DIR="$STACK_DIR/gemini-fastapi"
 OPENWEBUI_DIR="$STACK_DIR/open-webui"
-FASTAPI_PORT=8000
-WEBUI_PORT=8080
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
+WEBUI_PORT="${WEBUI_PORT:-8088}"
 
 check_trash_execution() {
     local cwd_phys
@@ -36,6 +36,45 @@ check_trash_execution() {
     esac
 }
 check_trash_execution
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    local ca_candidates=(
+        "/usr/share/ca-certificates/ca-bundle.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/certs/ca-certificates.crt"
+    )
+    for ca_path in "${ca_candidates[@]}"; do
+        if [ -f "$ca_path" ]; then
+            # Verify if bundle contains Kaspersky or local custom CA
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
+
+# Robust port listener check
+check_port() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tulpn "sport = :$port" 2>/dev/null | grep -q LISTEN
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -ti:"$port" >/dev/null 2>&1
+    elif command -v fuser >/dev/null 2>&1; then
+        fuser "$port/tcp" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
 
 # Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
 detect_firefox_doh() {
@@ -71,15 +110,16 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
+        CUSTOM_DOH_URL="https://dns.dns-ai.ru/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.dns-ai.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
-# Clean proxy environment variables
+# Clean proxy and compiler environment variables
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
+unset CC CXX CFLAGS LDFLAGS RUSTFLAGS
 export HF_HUB_OFFLINE=1
 
 stop_running_stack() {
@@ -285,7 +325,7 @@ deploy_skills() {
 start_openwebui_background() {
     local stack_dir="${LOCAL_AI_STACK_DIR:-$HOME/local-ai-stack}"
     local webui_dir="${OPENWEBUI_DIR:-$stack_dir/open-webui}"
-    local webui_port="${WEBUI_PORT:-8080}"
+    local webui_port="${WEBUI_PORT:-8088}"
 
     if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:$webui_port/health" >/dev/null 2>&1; then
         echo "✓ Open WebUI is already running and healthy on http://127.0.0.1:$webui_port"
@@ -409,6 +449,25 @@ show_status() {
     else
         echo "○ Open WebUI:    STOPPED"
     fi
+
+    # 3. Strata LLM Server Status
+    local strata_pid=""
+    if command -v lsof >/dev/null 2>&1; then
+        strata_pid=$(lsof -ti:8081 2>/dev/null | head -n1 || true)
+    fi
+    if [ -z "$strata_pid" ]; then
+        strata_pid=$(pgrep -f "serve/server\.py|strata-qwen|strata-" | head -n1 || true)
+    fi
+    if [ -n "$strata_pid" ]; then
+        echo "● Strata Server: RUNNING (PID: $strata_pid)"
+        if curl --noproxy "*" --max-time 3 -s -f "http://127.0.0.1:8081/v1/models" >/dev/null 2>&1; then
+            echo "  Health: OK (http://127.0.0.1:8081/v1/models reachable)"
+        else
+            echo "  Health: PORT OCCUPIED / UNRESPONSIVE"
+        fi
+    else
+        echo "○ Strata Server: STOPPED"
+    fi
     echo "=================================================="
 }
 
@@ -426,7 +485,7 @@ Commands:
   smolagent [prompt]     Setup Smolagent & Gemini-FastAPI; optionally run a prompt.
   openwebui [target_dir] Setup Open WebUI, install dependencies, and inject SQLite tools.
   start                  Start the full local AI stack (Gemini-FastAPI + Open WebUI).
-  stop                   Stop all running AI stack processes and free ports 8000 & 8080.
+  stop                   Stop all running AI stack processes and free ports 8000 & 8088.
   restart                Stop running processes and restart the local AI stack.
   status                 Check health and process status of Gemini-FastAPI and Open WebUI.
   help, -h, --help       Show this help message.
@@ -525,7 +584,7 @@ case "$MODE" in
         echo ""
 
         # Step 6: Start/Verify Open WebUI Stack
-        echo "--- [3/3] Starting Open WebUI Stack (Port 8080) ---"
+        echo "--- [3/3] Starting Open WebUI Stack (Port ${WEBUI_PORT:-8088}) ---"
         start_openwebui_background
         echo ""
 
@@ -533,12 +592,12 @@ case "$MODE" in
         echo "🎉 Unified Installation Complete & Stack Running!"
         echo "=================================================================="
         echo "✓ Gemini-FastAPI: Running on port 8000 (1 req / 2s rate limit)."
-        echo "✓ Open WebUI:      Running on http://127.0.0.1:8080 (Tools registered)."
+        echo "✓ Open WebUI:      Running on http://127.0.0.1:${WEBUI_PORT:-8088} (Tools registered)."
         echo "✓ Smolagent CLI:   Installed with thinking display & rate limits."
         echo "✓ Agentic Skills:  agentic-browser, quizmaster, and vision deployed."
         echo ""
         echo "Quick Access & Commands:"
-        echo "  • Open WebUI Web Interface: http://127.0.0.1:8080"
+        echo "  • Open WebUI Web Interface: http://127.0.0.1:${WEBUI_PORT:-8088}"
         echo "  • Smolagent query:          ~/agent.sh \"Your prompt here\""
         echo "  • Check service health:     ./install-bundle.sh status"
         echo "  • Restart stack:            ./install-bundle.sh restart"

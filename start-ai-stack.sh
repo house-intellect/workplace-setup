@@ -4,10 +4,10 @@ if [ -z "$BASH_VERSION" ]; then
 fi
 set -e
 
-INSTALL_DIR="$HOME/local-ai-stack"
+INSTALL_DIR="${LOCAL_AI_STACK_DIR:-$HOME/local-ai-stack}"
 FASTAPI_DIR="$INSTALL_DIR/gemini-fastapi"
-FASTAPI_PORT=8000
-WEBUI_PORT=8080
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
+WEBUI_PORT="${WEBUI_PORT:-8088}"
 PYTHON_EXEC="$INSTALL_DIR/tool-calling-test/.venv/bin/python"
 
 check_trash_execution() {
@@ -21,6 +21,45 @@ check_trash_execution() {
     esac
 }
 check_trash_execution
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    local ca_candidates=(
+        "/usr/share/ca-certificates/ca-bundle.crt"
+        "/etc/pki/tls/certs/ca-bundle.crt"
+        "/etc/ssl/certs/ca-certificates.crt"
+    )
+    for ca_path in "${ca_candidates[@]}"; do
+        if [ -f "$ca_path" ]; then
+            # Verify if bundle contains Kaspersky or local custom CA
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
+
+# Robust port listener check
+check_port() {
+    local port="$1"
+    if command -v ss >/dev/null 2>&1; then
+        ss -tulpn "sport = :$port" 2>/dev/null | grep -q LISTEN
+    elif command -v lsof >/dev/null 2>&1; then
+        lsof -ti:"$port" >/dev/null 2>&1
+    elif command -v fuser >/dev/null 2>&1; then
+        fuser "$port/tcp" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
 
 # Detect user's private Firefox DoH resolver (e.g. network.trr.uri / custom_uri)
 detect_firefox_doh() {
@@ -56,10 +95,10 @@ if [ -z "$CUSTOM_DOH_URL" ] && [ -z "$GEMINI_DOH_URL" ]; then
     if [ -n "$DETECTED_DOH" ]; then
         CUSTOM_DOH_URL="$DETECTED_DOH"
     else
-        CUSTOM_DOH_URL="https://dns.bezmezhau.com/dns-query"
+        CUSTOM_DOH_URL="https://dns.dns-ai.ru/dns-query"
     fi
 fi
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.dns-ai.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 

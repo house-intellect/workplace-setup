@@ -1,7 +1,28 @@
 #!/bin/sh
-FASTAPI_PORT=8000
+FASTAPI_PORT="${FASTAPI_PORT:-8000}"
 FASTAPI_DIR="$HOME/local-ai-stack/gemini-fastapi"
 SCRIPT_PATH="$HOME/local-ai-stack/tool-calling-test/smolagent.py"
+
+# Auto-detect system CA bundle (supports ALT Linux, Debian/Ubuntu, RHEL/CentOS)
+detect_system_ca() {
+    ca_candidates="/usr/share/ca-certificates/ca-bundle.crt /etc/pki/tls/certs/ca-bundle.crt /etc/ssl/certs/ca-certificates.crt"
+    for ca_path in $ca_candidates; do
+        if [ -f "$ca_path" ]; then
+            if grep -qi "Kaspersky" "$ca_path" 2>/dev/null; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+                return 0
+            elif [ -z "$SSL_CERT_FILE" ]; then
+                export SSL_CERT_FILE="$ca_path"
+                export CURL_CA_BUNDLE="$ca_path"
+                export REQUESTS_CA_BUNDLE="$ca_path"
+            fi
+        fi
+    done
+}
+detect_system_ca
+
 
 # 1. Capture prompt, text files, image, and model arguments (POSIX compatible)
 PROMPT_TEXT=""
@@ -96,7 +117,7 @@ if [ -f "$HOME/.bashrc" ]; then
 fi
 
 unset all_proxy ALL_PROXY http_proxy HTTP_PROXY https_proxy HTTPS_PROXY
-CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.bezmezhau.com/dns-query}}"
+CUSTOM_DOH_URL="${CUSTOM_DOH_URL:-${GEMINI_DOH_URL:-https://dns.dns-ai.ru/dns-query}}"
 export CUSTOM_DOH_URL
 export GEMINI_DOH_URL="$CUSTOM_DOH_URL"
 
