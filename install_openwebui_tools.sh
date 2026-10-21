@@ -1868,7 +1868,29 @@ try:
                     updated_at=strftime('%s', 'now')
             """, (full_model_id, owner_id, None, display_name, meta_strata))
             registered_model_ids.append(full_model_id)
-            registered_model_ids.append(m_id)
+
+    # Register Ollama models explicitly with (Ollama) label to prevent collision with Strata
+    if ollama_present:
+        try:
+            oreq = urllib.request.Request("http://127.0.0.1:11434/api/tags", headers={"User-Agent": "OpenWebUI-Installer"})
+            with urllib.request.urlopen(oreq, timeout=1.5) as oresp:
+                if oresp.status == 200:
+                    obody = json.loads(oresp.read().decode("utf-8"))
+                    for om in obody.get("models", []):
+                        omid = om.get("name") or om.get("model")
+                        if omid:
+                            registered_model_ids.append(omid)
+                            oclean = omid.replace(":", " ").replace("-", " ").title()
+                            cursor.execute("""
+                                INSERT INTO model (id, user_id, base_model_id, name, params, meta, updated_at, created_at, is_active)
+                                VALUES (?, ?, NULL, ?, '{}', ?, strftime('%s', 'now'), strftime('%s', 'now'), 1)
+                                ON CONFLICT(id) DO UPDATE SET
+                                    name=excluded.name,
+                                    is_active=1,
+                                    updated_at=strftime('%s', 'now')
+                            """, (omid, owner_id, f"{oclean} (Ollama)", json.dumps({"profile_image_url": "/static/favicon.png", "description": f"Ollama Engine - {omid}"})))
+        except Exception:
+            pass
 
     # Remove ghost models while preserving all registered Gemini and Strata models
     if registered_model_ids:
